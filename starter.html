@@ -1,0 +1,1535 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ultraviolet — Mapping Starter</title>
+<!--
+  ULTRAVIOLET STARTER
+  ===================
+  The Ultraviolet projection mapper with every effect stripped out. You get:
+
+    MAP  — trace shapes over your object (pen, freehand, point editing, snapping,
+           reference photo, undo, save / export / import).
+    PLAY — a black stage that calls YOUR draw() function every frame with the
+           shapes you traced.
+
+  Everything you need to write is in the first <script> block below, marked
+  "YOUR CODE". The rest of the file is the mapping engine; you can ignore it.
+
+  One self-contained file: open it in Chrome, from file:// is fine.
+-->
+<style>
+:root {
+  --panel: rgba(14, 16, 22, 0.92);
+  --line: #23283a;
+  --text: #cdd6e6;
+  --dim: #7b869c;
+  --accent: #4df3ff;
+  --danger: #ff5d6c;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0; height: 100%; overflow: hidden;
+  background: #000; color: var(--text);
+  font: 12px/1.45 ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  -webkit-font-smoothing: antialiased;
+}
+#stage { position: fixed; inset: 0; display: block; cursor: crosshair; }
+
+.hint {
+  position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%);
+  padding: 5px 12px; border-radius: 999px;
+  background: rgba(10, 12, 18, 0.72); border: 1px solid var(--line);
+  color: var(--dim); font-size: 11px; pointer-events: none; z-index: 5;
+  max-width: 80vw; text-align: center;
+}
+body.nopanel .hint, body.showmode .hint { opacity: 0; transition: opacity .25s; }
+
+#err {
+  position: fixed; right: 10px; top: 10px; max-width: 46vw; z-index: 20;
+  padding: 8px 10px; border-radius: 4px; white-space: pre-wrap;
+  background: rgba(40, 6, 10, .92); border: 1px solid var(--danger); color: #ffb3ba;
+  font-size: 11px;
+}
+
+#panel {
+  position: fixed; top: 0; left: 0; bottom: 0; width: 320px; z-index: 10;
+  display: flex; flex-direction: column;
+  background: var(--panel); border-right: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+  transition: transform .18s ease;
+}
+body.nopanel #panel { transform: translateX(-100%); }
+#panel header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 10px 8px; border-bottom: 1px solid var(--line);
+}
+.brand { font-weight: 700; letter-spacing: .14em; font-size: 12px; color: #fff; flex: 1; }
+.brand .sub { display: block; font-weight: 400; letter-spacing: .05em; color: var(--dim); font-size: 10px; }
+
+.modes { display: flex; border-bottom: 1px solid var(--line); }
+.modes button {
+  flex: 1; padding: 8px; background: transparent; border: 0; color: var(--dim);
+  font: inherit; letter-spacing: .12em; cursor: pointer; border-radius: 0;
+}
+.modes button.on { color: #000; background: var(--accent); font-weight: 700; }
+
+.body { flex: 1; overflow-y: auto; padding: 10px; }
+.body::-webkit-scrollbar { width: 8px; }
+.body::-webkit-scrollbar-thumb { background: #262c3c; border-radius: 4px; }
+
+h3 {
+  margin: 16px 0 6px; font-size: 10px; letter-spacing: .16em; color: var(--dim);
+  text-transform: uppercase; border-bottom: 1px solid var(--line); padding-bottom: 4px;
+}
+.row { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+.row.wrap { flex-wrap: wrap; }
+.grow { flex: 1; }
+
+button, select, input[type=text], input[type=number] {
+  background: #141826; color: var(--text); border: 1px solid var(--line);
+  border-radius: 4px; font: inherit; padding: 4px 6px;
+}
+button { cursor: pointer; }
+button:hover { border-color: #3a4560; color: #fff; }
+.mini { padding: 4px 8px; font-size: 11px; }
+.danger, .icon.danger { color: var(--danger); }
+.icon {
+  width: 22px; height: 22px; padding: 0; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid transparent; color: var(--dim);
+}
+.icon:hover { border-color: var(--line); color: #fff; }
+
+.tools { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.tool { padding: 7px 2px; font-size: 11px; }
+.tool.on { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 700; }
+
+label.chk { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); cursor: pointer; }
+label.nf { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); }
+label.nf input[type=number], label.nf input[type=text] { width: 62px; }
+label.nf.grow input { width: 100%; flex: 1; }
+input[type=range] { accent-color: var(--accent); height: 18px; }
+input[type=color] {
+  width: 24px; height: 20px; padding: 0; border: 1px solid var(--line);
+  background: transparent; border-radius: 3px; cursor: pointer;
+}
+input[type=file] { font-size: 10px; color: var(--dim); max-width: 180px; }
+
+.muted { color: var(--dim); font-size: 10.5px; line-height: 1.5; margin: 4px 0; }
+.empty { color: var(--dim); font-size: 11px; padding: 8px 4px; }
+code { color: var(--accent); }
+
+.list { display: flex; flex-direction: column; gap: 3px; }
+.srow {
+  display: flex; align-items: center; gap: 4px; padding: 3px 4px;
+  border: 1px solid transparent; border-radius: 4px; cursor: pointer;
+}
+.srow:hover { background: #141826; }
+.srow.sel { background: #141c2c; border-color: #2f5f6e; }
+.sname { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text); font: inherit; padding: 2px 3px; }
+.sname:focus { background: #0d1018; outline: 1px solid var(--line); }
+.srow .meta { color: var(--dim); font-size: 10px; min-width: 26px; text-align: right; }
+.swatch { flex: 0 0 auto; }
+.props { margin-top: 6px; }
+.scrub { width: 100%; margin: 4px 0 8px; }
+
+body.showmode #stage { cursor: none; }
+body.showmode #panel { background: rgba(8, 9, 13, .96); }
+</style>
+</head>
+<body>
+
+<canvas id="stage"></canvas>
+<div id="hint" class="hint"></div>
+<div id="err" hidden></div>
+
+<aside id="panel">
+  <header>
+    <div class="brand">ULTRAVIOLET<span class="sub">mapping starter</span></div>
+    <button id="btnFull" class="icon" title="Fullscreen (F)">&#9974;</button>
+    <button id="btnCollapse" class="icon" title="Hide panel (Tab)">&#8213;</button>
+  </header>
+
+  <div class="modes">
+    <button data-mode="map" class="on">MAP</button>
+    <button data-mode="show">PLAY</button>
+  </div>
+
+  <div class="body">
+
+    <!-- ================= MAP ================= -->
+    <section id="secMap">
+      <div class="tools" id="tools"></div>
+
+      <div class="row wrap">
+        <label class="chk"><input type="checkbox" id="gridChk" checked><span>grid</span></label>
+        <label class="chk"><input type="checkbox" id="snapGridChk"><span>snap grid</span></label>
+        <label class="chk"><input type="checkbox" id="snapVertChk" checked><span>snap points</span></label>
+        <label class="chk"><input type="checkbox" id="previewChk"><span>preview fx</span></label>
+      </div>
+      <div class="row">
+        <label class="nf"><span>grid</span><input type="number" id="gridSize" value="25" min="5" max="200" step="1"></label>
+      </div>
+
+      <h3>Shapes</h3>
+      <div id="shapeList" class="list"></div>
+      <div id="shapeProps" class="props"></div>
+
+      <h3>Reference image</h3>
+      <div class="row wrap">
+        <input type="file" id="refFile" accept="image/*">
+        <button id="refClear" class="mini">clear</button>
+      </div>
+      <div class="row">
+        <label class="nf grow"><span>opacity</span><input type="range" id="refOpacity" min="0" max="1" step="0.01" value="0.45"></label>
+        <label class="chk"><input type="checkbox" id="refVisible" checked><span>show</span></label>
+        <select id="refFit" title="how the photo fills the design rect">
+          <option value="cover">cover</option>
+          <option value="contain">contain</option>
+        </select>
+      </div>
+      <div class="muted">Shoot the object from the projector's position, load it here, and trace over it.</div>
+
+      <h3>Output</h3>
+      <div class="row">
+        <label class="nf grow"><span>aspect</span><input type="text" id="aspectInput" title="1.7778, 16:9 or 1920x1080"></label>
+        <button id="btnMatchScreen" class="mini">match screen</button>
+      </div>
+      <div class="muted" id="aspectNote"></div>
+      <div class="muted">The map is pinned to the physical screen: a window shows the part of it underneath, and fullscreen (F11 or F) reveals the rest without moving anything.</div>
+
+      <h3>Project</h3>
+      <div class="row">
+        <label class="nf grow"><span>name</span><input type="text" id="projName"></label>
+      </div>
+      <div class="row wrap">
+        <button id="btnExport" class="mini">export .json</button>
+        <button id="btnImport" class="mini">import</button>
+        <input type="file" id="importFile" accept="application/json,.json" hidden>
+        <button id="btnClearShapes" class="mini danger">clear shapes</button>
+      </div>
+      <div class="muted">Autosaves to this browser. Ctrl+Z / Ctrl+Shift+Z to undo. Imports maps exported from the full Ultraviolet app too.</div>
+    </section>
+
+    <!-- ================= PLAY ================= -->
+    <section id="secShow" hidden>
+      <div class="row">
+        <button id="btnPlay" class="mini">&#9654; play</button>
+        <button id="btnRestart" class="mini">&#8635; restart</button>
+        <span id="timeLabel" class="muted"></span>
+      </div>
+      <div class="row">
+        <label class="nf grow"><span>speed</span><input type="range" id="speedInput" min="0" max="3" step="0.05" value="1"></label>
+        <span id="speedVal" class="muted">1.00x</span>
+      </div>
+      <div class="muted">PLAY calls <code>draw(ctx, t, shapes)</code> from the first script in this file every frame. Edit it, save, reload the page. Errors show up in the top-right corner.</div>
+      <div class="muted">space play/pause · R restart · F fullscreen · Tab hides the panel · M back to MAP</div>
+    </section>
+
+  </div>
+</aside>
+
+<!-- =====================================================================
+     YOUR CODE
+     =====================================================================
+     draw(ctx, t, shapes) runs every frame in PLAY mode.
+
+       ctx     the canvas 2D context, in CSS pixels; the screen is already black
+       t       seconds since play / restart
+       shapes  the visible shapes, in list order. Each one has:
+                 name, color ('#rrggbb'), closed (true/false),
+                 pts: [{x, y}, ...] in 0..1 coordinates inside the design rect
+
+     Helpers (all return pixels, so you can draw with them directly):
+
+       px(shape)         the shape's points in pixels (closed shapes repeat the first point)
+       pathOf(ctx, s)    begins a path along the shape; then ctx.stroke() or ctx.fill()
+       clipTo(ctx, s)    clips drawing to the inside of a closed shape (wrap in save/restore)
+       center(s)         {x, y} centre of the shape
+       bounds(s)         {x0, y0, x1, y1, w, h} bounding box
+       u(v)              a size in design units -> pixels; 1000 u = full height of the
+                         projection, so sizes look the same windowed and fullscreen
+       rgba(hex, a)      '#4df3ff', 0.5  ->  'rgba(77,243,255,0.5)'
+       along(s, f)       the point {x, y, tx, ty} at fraction f (0..1) of the way round
+                         the outline, plus the direction of travel (tx, ty)
+       clamp(v)          v limited to 0..1 (or clamp(v, min, max))
+       W                 the design rect, the projected area: W.x, W.y, W.w, W.h
+       UV.util.ease      easing curves: UV.util.ease.cubicOut(t) etc.
+       UV.util.mulberry32(seed)  a repeatable random number generator
+     ===================================================================== -->
+<script>
+function draw(ctx, t, shapes) {
+  /* Placeholder: every shape's outline in its own colour, gently breathing.
+     Delete this and build your own. */
+  shapes.forEach((s, i) => {
+    const glow = 0.55 + 0.45 * Math.sin(t * 2 + i);
+    pathOf(ctx, s);
+    ctx.strokeStyle = rgba(s.color, glow);
+    ctx.lineWidth = u(3);
+    ctx.stroke();
+  });
+
+  /* Ideas to try:
+     - fill each closed shape, fading in one after another:  ctx.globalAlpha = clamp(t - i)
+     - a dot running round each outline:                     along(s, (t * 0.2) % 1)
+     - stripes sliding through a shape:                      clipTo(ctx, s) then draw lines
+     - ctx.globalCompositeOperation = 'lighter' to make overlaps add up and glow  */
+}
+</script>
+
+<!-- =====================================================================
+     The mapping engine below. You should not need to change anything here.
+     ===================================================================== -->
+<script>
+window.UV = window.UV || {};
+
+/* ---- tiny event bus ---------------------------------------------------- */
+(function (UV) {
+  const map = {};
+  UV.bus = {
+    on(ev, fn) { (map[ev] = map[ev] || []).push(fn); return fn; },
+    off(ev, fn) { map[ev] = (map[ev] || []).filter((f) => f !== fn); },
+    emit(ev, data) { (map[ev] || []).forEach((f) => f(data)); },
+  };
+})(window.UV);
+
+/* ---- math / geometry helpers --------------------------------------------- */
+(function (UV) {
+  const U = (UV.util = {});
+
+  U.clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  U.lerp = (a, b, t) => a + (b - a) * t;
+  U.dist = (a, b) => Math.hypot(b.x - a.x, b.y - a.y);
+  U.uid = (p) => (p || 'id') + '_' + Math.random().toString(36).slice(2, 9);
+
+  /* deterministic RNG so a replayed animation looks identical */
+  U.mulberry32 = function (seed) {
+    let a = seed >>> 0;
+    return function () {
+      a |= 0; a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  };
+
+  U.ease = {
+    linear: (t) => t,
+    quadIn: (t) => t * t,
+    quadOut: (t) => t * (2 - t),
+    quadInOut: (t) => (t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t),
+    cubicOut: (t) => 1 - Math.pow(1 - t, 3),
+    cubicInOut: (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2),
+    expoOut: (t) => (t >= 1 ? 1 : 1 - Math.pow(2, -10 * t)),
+    backOut: (t) => { const c = 1.70158; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); },
+    elasticOut: (t) => {
+      if (t === 0 || t === 1) return t;
+      const p = 0.35;
+      return Math.pow(2, -10 * t) * Math.sin(((t - p / 4) * (2 * Math.PI)) / p) + 1;
+    },
+  };
+
+  U.rgba = function (hex, a) {
+    let h = (hex || '#ffffff').replace('#', '');
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    const n = parseInt(h, 16);
+    return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+  };
+
+  /* expand a shape into a drawable point list (closed shapes repeat p0) */
+  U.outline = function (pts, closed) {
+    if (!pts || pts.length < 2) return (pts || []).slice();
+    return closed ? pts.concat([pts[0]]) : pts.slice();
+  };
+
+  /* cumulative arc length table */
+  U.cum = function (pts) {
+    const c = [0];
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) { total += U.dist(pts[i - 1], pts[i]); c.push(total); }
+    return { c, total };
+  };
+
+  /* point + unit tangent at arc-length s */
+  U.pointAt = function (pts, cum, s) {
+    const c = cum.c;
+    if (!pts.length) return null;
+    if (s <= 0) s = 0;
+    if (s >= cum.total) s = cum.total;
+    let i = 1;
+    while (i < c.length - 1 && c[i] < s) i++;
+    const segLen = c[i] - c[i - 1] || 1;
+    const t = (s - c[i - 1]) / segLen;
+    const a = pts[i - 1], b = pts[i] || a;
+    return {
+      x: a.x + (b.x - a.x) * t,
+      y: a.y + (b.y - a.y) * t,
+      tx: (b.x - a.x) / segLen,
+      ty: (b.y - a.y) / segLen,
+      i: i,
+    };
+  };
+
+  U.pointInPoly = function (p, poly) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+      if (yi > p.y !== yj > p.y && p.x < ((xj - xi) * (p.y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  };
+
+  U.centroid = function (pts) {
+    let x = 0, y = 0;
+    for (const p of pts) { x += p.x; y += p.y; }
+    return { x: x / pts.length, y: y / pts.length };
+  };
+
+  U.bbox = function (pts) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of pts) { if (p.x < x0) x0 = p.x; if (p.y < y0) y0 = p.y; if (p.x > x1) x1 = p.x; if (p.y > y1) y1 = p.y; }
+    return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 };
+  };
+
+  /* distance from point to segment, plus the closest point */
+  U.segDist = function (p, a, b) {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const l2 = dx * dx + dy * dy;
+    let t = l2 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2 : 0;
+    t = U.clamp(t, 0, 1);
+    const q = { x: a.x + dx * t, y: a.y + dy * t };
+    return { d: U.dist(p, q), q, t };
+  };
+
+  /* Ramer–Douglas–Peucker, for taming freehand strokes */
+  U.rdp = function (pts, eps) {
+    if (pts.length < 3) return pts.slice();
+    let maxD = 0, idx = 0;
+    const a = pts[0], b = pts[pts.length - 1];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const d = U.segDist(pts[i], a, b).d;
+      if (d > maxD) { maxD = d; idx = i; }
+    }
+    if (maxD > eps) {
+      const l = U.rdp(pts.slice(0, idx + 1), eps);
+      const r = U.rdp(pts.slice(idx), eps);
+      return l.slice(0, -1).concat(r);
+    }
+    return [a, b];
+  };
+
+  /* snap a vector to the nearest of 8 compass directions */
+  const DIRS = [];
+  for (let i = 0; i < 8; i++) {
+    const a = (i * Math.PI) / 4;
+    DIRS.push({ x: Math.cos(a), y: Math.sin(a) });
+  }
+  U.DIRS = DIRS;
+  U.snap8 = function (v) {
+    let best = 0, bd = -2;
+    const len = Math.hypot(v.x, v.y) || 1;
+    for (let i = 0; i < 8; i++) {
+      const d = (v.x / len) * DIRS[i].x + (v.y / len) * DIRS[i].y;
+      if (d > bd) { bd = d; best = i; }
+    }
+    return best;
+  };
+})(window.UV);
+
+/* ---- the stage ------------------------------------------------------------
+   Everything is stored in normalized 0..1 coordinates inside a "design rect"
+   whose aspect ratio is locked to the projector/screen. The design rect is
+   pinned to the PHYSICAL SCREEN, not to the browser window: it is letterboxed
+   into the whole monitor, and the window is just a view onto the part of it
+   that sits underneath. So going fullscreen (F11 or F) reveals the rest of the
+   map without moving anything, and a shape traced windowed lands on the same
+   spot of the projector. */
+(function (UV) {
+  const S = (UV.stage = {
+    canvas: null,
+    ctx: null,
+    dpr: 1,
+    aspect: 16 / 9,
+    rect: { x: 0, y: 0, w: 0, h: 0 },
+    vw: 0,
+    vh: 0,
+    origin: { x: 0, y: 0 }, /* top-left of the viewport, in screen px */
+  });
+
+  /* the viewport's position on the screen. The window frame and tab strip are
+     estimated from outer vs inner size, then corrected exactly by the first
+     pointer event (screenX - clientX), which is kept until the frame changes. */
+  let fix = null; /* { sig, dx, dy } */
+  const screenLeft = () => (screen.left !== undefined ? screen.left : screen.availLeft || 0);
+  const screenTop = () => (screen.top !== undefined ? screen.top : screen.availTop || 0);
+  const frameSig = () => [window.outerWidth - window.innerWidth, window.outerHeight - window.innerHeight].join(',');
+  function isFull() {
+    return !!document.fullscreenElement ||
+      (window.innerWidth >= screen.width && window.innerHeight >= screen.height);
+  }
+  function estimate() {
+    const side = Math.max(0, (window.outerWidth - window.innerWidth) / 2);
+    return {
+      x: window.screenX - screenLeft() + side,
+      y: window.screenY - screenTop() + Math.max(0, window.outerHeight - window.innerHeight - side),
+    };
+  }
+  function locate() {
+    if (isFull()) return { x: 0, y: 0 };
+    const e = estimate();
+    if (fix && fix.sig === frameSig()) return { x: e.x + fix.dx, y: e.y + fix.dy };
+    return e;
+  }
+  function calibrate(ev) {
+    if (isFull()) return;
+    const e = estimate();
+    const x = ev.screenX - ev.clientX - screenLeft(), y = ev.screenY - ev.clientY - screenTop();
+    const dx = x - e.x, dy = y - e.y;
+    if (fix && fix.sig === frameSig() && Math.abs(fix.dx - dx) < 0.5 && Math.abs(fix.dy - dy) < 0.5) return;
+    fix = { sig: frameSig(), dx, dy };
+    S.layout();
+  }
+
+  S.init = function (canvas) {
+    S.canvas = canvas;
+    S.ctx = canvas.getContext('2d');
+    window.addEventListener('resize', S.resize);
+    window.addEventListener('pointermove', calibrate, true);
+    window.addEventListener('pointerdown', calibrate, true);
+    document.addEventListener('fullscreenchange', S.resize);
+    S.resize();
+  };
+
+  /* call every frame: catches the window being dragged, which fires no event */
+  let lastKey = '';
+  S.track = function () {
+    const k = [window.screenX, window.screenY, window.innerWidth, window.innerHeight,
+      window.outerWidth, window.outerHeight, screen.width, screen.height].join(',');
+    if (k !== lastKey) { lastKey = k; S.layout(); }
+  };
+
+  S.screenAspect = function () {
+    return (window.screen && window.screen.width / window.screen.height) || 16 / 9;
+  };
+
+  S.setAspect = function (a) {
+    S.aspect = a || S.screenAspect();
+    S.resize();
+  };
+
+  S.resize = function () {
+    const c = S.canvas;
+    if (!c) return;
+    const w = window.innerWidth, h = window.innerHeight;
+    S.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    S.vw = w; S.vh = h;
+    c.width = Math.round(w * S.dpr);
+    c.height = Math.round(h * S.dpr);
+    c.style.width = w + 'px';
+    c.style.height = h + 'px';
+    S.layout();
+  };
+
+  /* the design rect: letterboxed into the whole screen, then shifted so it
+     stays put on the screen wherever the viewport happens to be */
+  S.layout = function () {
+    if (!S.canvas) return;
+    const w = screen.width, h = screen.height;
+    let rw, rh;
+    if (w / h > S.aspect) { rh = h; rw = h * S.aspect; }
+    else { rw = w; rh = w / S.aspect; }
+    S.origin = locate();
+    S.rect = { x: (w - rw) / 2 - S.origin.x, y: (h - rh) / 2 - S.origin.y, w: rw, h: rh };
+    UV.bus.emit('resize');
+  };
+
+  /* normalized -> css pixels */
+  S.n2s = function (p) { return { x: S.rect.x + p.x * S.rect.w, y: S.rect.y + p.y * S.rect.h }; };
+  /* css pixels -> normalized */
+  S.s2n = function (p) { return { x: (p.x - S.rect.x) / S.rect.w, y: (p.y - S.rect.y) / S.rect.h }; };
+  /* design units: 1000 u == full design height, so sizes are resolution independent */
+  S.u = function (v) { return (v * S.rect.h) / 1000; };
+
+  S.begin = function () {
+    const ctx = S.ctx;
+    ctx.setTransform(S.dpr, 0, 0, S.dpr, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, S.vw, S.vh);
+  };
+
+  S.requestFullscreen = function () {
+    const el = document.documentElement;
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (el.requestFullscreen) el.requestFullscreen();
+  };
+})(window.UV);
+
+/* ---- project model: shapes, persistence, undo ----------------------------- */
+(function (UV) {
+  const U = UV.util;
+  const KEY = 'uv.starter.v1';
+  /* the full Ultraviolet app's save; read once on first run so shapes traced
+     there show up here, never written to */
+  const APP_KEY = 'uv.project.v1';
+
+  const P = (UV.project = {
+    name: 'untitled',
+    aspect: 16 / 9,
+    shapes: [],
+    ref: { src: null, opacity: 0.45, visible: true, fit: 'cover' },
+    sel: new Set(),
+    _undo: [],
+    _redo: [],
+    _img: null,
+  });
+
+  P.newShape = function (pts, closed, name) {
+    return {
+      id: U.uid('sh'),
+      name: name || 'shape ' + (P.shapes.length + 1),
+      pts: pts || [],
+      closed: closed !== false,
+      color: '#4df3ff',
+      visible: true,
+      locked: false,
+      rev: 1,
+    };
+  };
+
+  P.add = function (shape) {
+    P.shapes.push(shape);
+    P.sel = new Set([shape.id]);
+    P.touch();
+    return shape;
+  };
+
+  P.byId = function (id) { return P.shapes.find((s) => s.id === id); };
+  P.selected = function () { return P.shapes.filter((s) => P.sel.has(s.id)); };
+
+  P.remove = function (ids) {
+    P.shapes = P.shapes.filter((s) => !ids.includes(s.id));
+    ids.forEach((id) => P.sel.delete(id));
+    P.touch();
+  };
+
+  P.bump = function (shape) { shape.rev = (shape.rev || 0) + 1; };
+
+  /* ---- undo ---- */
+  P.snapshot = function () {
+    P._undo.push(JSON.stringify(P.shapes));
+    if (P._undo.length > 80) P._undo.shift();
+    P._redo.length = 0;
+  };
+  function restore(json) {
+    P.shapes = JSON.parse(json);
+    P.sel = new Set([...P.sel].filter((id) => P.byId(id)));
+    P.touch();
+  }
+  P.undo = function () {
+    if (!P._undo.length) return;
+    P._redo.push(JSON.stringify(P.shapes));
+    restore(P._undo.pop());
+  };
+  P.redo = function () {
+    if (!P._redo.length) return;
+    P._undo.push(JSON.stringify(P.shapes));
+    restore(P._redo.pop());
+  };
+
+  /* ---- persistence ---- */
+  let saveTimer = null;
+  P.touch = function () {
+    UV.bus.emit('project:changed');
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(P.save, 400);
+  };
+
+  P.serialize = function (withRef) {
+    return {
+      v: 1,
+      name: P.name,
+      aspect: P.aspect,
+      shapes: P.shapes,
+      ref: withRef ? P.ref : { src: null, opacity: P.ref.opacity, visible: P.ref.visible, fit: P.ref.fit },
+    };
+  };
+
+  P.save = function () {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(P.serialize(true)));
+    } catch (e) {
+      /* reference image is usually what blows the quota — retry without it */
+      try { localStorage.setItem(KEY, JSON.stringify(P.serialize(false))); } catch (e2) { /* give up quietly */ }
+    }
+  };
+
+  /* accepts this file's saves and full Ultraviolet exports (their cues are ignored) */
+  P.load = function (data) {
+    if (!data) return false;
+    P.name = data.name || 'untitled';
+    P.aspect = data.aspect || UV.stage.screenAspect();
+    P.shapes = (data.shapes || []).map((s) => Object.assign({ rev: 1, visible: true, locked: false }, s));
+    P.ref = Object.assign({ src: null, opacity: 0.45, visible: true, fit: 'cover' }, data.ref || {});
+    P.sel = new Set();
+    P.setRef(P.ref.src);
+    UV.stage.setAspect(P.aspect);
+    P.touch();
+    return true;
+  };
+
+  P.loadLocal = function () {
+    for (const k of [KEY, APP_KEY]) {
+      try {
+        const raw = localStorage.getItem(k);
+        if (raw && P.load(JSON.parse(raw))) return true;
+      } catch (e) { /* try the next one */ }
+    }
+    return false;
+  };
+
+  P.setRef = function (src) {
+    P.ref.src = src || null;
+    if (!src) { P._img = null; return; }
+    const img = new Image();
+    img.onload = () => { P._img = img; UV.bus.emit('project:changed'); };
+    img.src = src;
+  };
+
+  P.clear = function () {
+    P.snapshot();
+    P.shapes = [];
+    P.sel = new Set();
+    P.touch();
+  };
+})(window.UV);
+
+/* ---- the MAP editor: draw and edit shapes --------------------------------- */
+(function (UV) {
+  const U = UV.util;
+
+  const E = (UV.editor = {
+    tool: 'select',
+    grid: true,
+    gridSize: 25,      /* design units (1000 = full height) */
+    snapGrid: false,
+    snapVertex: true,
+    pending: null,     /* pen tool in progress: {pts:[], closed} */
+    drag: null,
+    hover: null,
+    cursor: { x: 0.5, y: 0.5 },
+    shiftKey: false,
+    altKey: false,
+  });
+
+  const st = () => UV.stage;
+  const P = () => UV.project;
+
+  E.setTool = function (t) {
+    E.tool = t;
+    if (t !== 'pen') E.pending = null;
+    UV.bus.emit('editor:tool');
+  };
+
+  function evtN(e) {
+    const r = st().canvas.getBoundingClientRect();
+    return st().s2n({ x: e.clientX - r.left, y: e.clientY - r.top });
+  }
+  function pxToN(px) { return px / st().rect.h; }           /* px -> normalized y units */
+  const NEAR = 8;                                           /* hit radius, px */
+
+  function snap(n, exclude) {
+    let out = { x: n.x, y: n.y };
+    if (E.snapVertex) {
+      let best = null, bd = pxToN(10);
+      for (const s of P().shapes) {
+        if (!s.visible) continue;
+        for (let i = 0; i < s.pts.length; i++) {
+          if (exclude && exclude.shape === s && exclude.i === i) continue;
+          const p = s.pts[i];
+          const d = Math.hypot((p.x - n.x) * st().aspect, p.y - n.y);
+          if (d < bd) { bd = d; best = p; }
+        }
+      }
+      if (best) return { x: best.x, y: best.y, snapped: true };
+    }
+    if (E.snapGrid) {
+      const g = E.gridSize / 1000;
+      out = { x: Math.round((n.x * st().aspect) / g) * g / st().aspect, y: Math.round(n.y / g) * g };
+    }
+    return out;
+  }
+
+  /* constrain b to 45 degree steps from a (in visual space) */
+  function ortho(a, b) {
+    const asp = st().aspect;
+    const dx = (b.x - a.x) * asp, dy = b.y - a.y;
+    const d = U.DIRS[U.snap8({ x: dx, y: dy })];
+    const len = Math.hypot(dx, dy);
+    return { x: a.x + (d.x * len) / asp, y: a.y + d.y * len };
+  }
+
+  /* ---- hit testing ---- */
+  function hitVertex(n, shapes) {
+    const r = pxToN(NEAR);
+    for (let k = shapes.length - 1; k >= 0; k--) {
+      const s = shapes[k];
+      if (!s.visible || s.locked) continue;
+      for (let i = 0; i < s.pts.length; i++) {
+        const p = s.pts[i];
+        if (Math.hypot((p.x - n.x) * st().aspect, p.y - n.y) < r) return { shape: s, i: i };
+      }
+    }
+    return null;
+  }
+  function hitShape(n) {
+    const r = pxToN(NEAR);
+    const asp = st().aspect;
+    const iso = (p) => ({ x: p.x * asp, y: p.y });
+    const ni = iso(n);
+    for (let k = P().shapes.length - 1; k >= 0; k--) {
+      const s = P().shapes[k];
+      if (!s.visible || s.locked || s.pts.length < 2) continue;
+      const pts = U.outline(s.pts, s.closed).map(iso);
+      for (let i = 0; i < pts.length - 1; i++) {
+        const h = U.segDist(ni, pts[i], pts[i + 1]);
+        if (h.d < r) return { shape: s, type: 'edge', i: i, at: h.q };
+      }
+      if (s.closed && U.pointInPoly(ni, s.pts.map(iso))) return { shape: s, type: 'inside' };
+    }
+    return null;
+  }
+
+  /* ---- pointer ---- */
+  E.attach = function (canvas) {
+    canvas.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    canvas.addEventListener('dblclick', onDbl);
+    canvas.addEventListener('contextmenu', (e) => { if (E.pending) e.preventDefault(); });
+  };
+
+  function onDown(e) {
+    if (UV.app.mode !== 'map') return;
+    if (e.button === 2) { if (E.pending) finishPen(false); return; }
+    st().canvas.setPointerCapture(e.pointerId);
+    const raw = evtN(e);
+    E.cursor = raw;
+
+    if (E.tool === 'pen') {
+      let n = snap(raw);
+      const pend = E.pending;
+      if (pend && pend.pts.length) {
+        if (E.shiftKey) n = ortho(pend.pts[pend.pts.length - 1], n);
+        /* click the first point to close */
+        const f = pend.pts[0];
+        if (pend.pts.length > 2 && Math.hypot((f.x - n.x) * st().aspect, f.y - n.y) < pxToN(NEAR + 2)) {
+          finishPen(true);
+          return;
+        }
+      }
+      if (!E.pending) E.pending = { pts: [], closed: true };
+      E.pending.pts.push(n);
+      UV.bus.emit('editor:pending');
+      return;
+    }
+
+    if (E.tool === 'draw') {
+      E.drag = { type: 'freehand', pts: [raw] };
+      return;
+    }
+
+    if (E.tool === 'vertex') {
+      const sel = P().selected();
+      const pool = sel.length ? sel : P().shapes;
+      const hv = hitVertex(raw, pool);
+      if (hv) {
+        if (e.altKey) {
+          if (hv.shape.pts.length > 2) {
+            P().snapshot();
+            hv.shape.pts.splice(hv.i, 1);
+            P().bump(hv.shape);
+            P().touch();
+          }
+          return;
+        }
+        P().sel = new Set([hv.shape.id]);
+        P().snapshot();
+        E.drag = { type: 'vertex', shape: hv.shape, i: hv.i };
+        UV.bus.emit('project:changed');
+        return;
+      }
+      /* click an edge to insert a vertex */
+      const hs = hitShape(raw);
+      if (hs && hs.type === 'edge') {
+        P().snapshot();
+        const asp = st().aspect;
+        const at = { x: hs.at.x / asp, y: hs.at.y };
+        hs.shape.pts.splice(hs.i + 1, 0, at);
+        P().bump(hs.shape);
+        P().sel = new Set([hs.shape.id]);
+        E.drag = { type: 'vertex', shape: hs.shape, i: hs.i + 1 };
+        P().touch();
+        return;
+      }
+      P().sel = new Set();
+      UV.bus.emit('project:changed');
+      return;
+    }
+
+    /* select tool */
+    const hv = hitVertex(raw, P().selected());
+    if (hv) {
+      P().snapshot();
+      E.drag = { type: 'vertex', shape: hv.shape, i: hv.i };
+      return;
+    }
+    const hs = hitShape(raw);
+    if (hs) {
+      if (e.shiftKey) {
+        if (P().sel.has(hs.shape.id)) P().sel.delete(hs.shape.id);
+        else P().sel.add(hs.shape.id);
+      } else if (!P().sel.has(hs.shape.id)) {
+        P().sel = new Set([hs.shape.id]);
+      }
+      P().snapshot();
+      E.drag = { type: 'move', start: raw, orig: P().selected().map((s) => ({ s: s, pts: s.pts.map((p) => ({ x: p.x, y: p.y })) })) };
+      UV.bus.emit('project:changed');
+      return;
+    }
+    if (!e.shiftKey) P().sel = new Set();
+    E.drag = { type: 'marquee', a: raw, b: raw };
+    UV.bus.emit('project:changed');
+  }
+
+  function onMove(e) {
+    if (UV.app.mode !== 'map') return;
+    const raw = evtN(e);
+    E.cursor = raw;
+    E.shiftKey = e.shiftKey;
+    E.altKey = e.altKey;
+    const d = E.drag;
+    if (!d) {
+      E.hover = hitShape(raw);
+      return;
+    }
+    if (d.type === 'freehand') {
+      const last = d.pts[d.pts.length - 1];
+      if (U.dist(last, raw) > pxToN(2)) d.pts.push(raw);
+      return;
+    }
+    if (d.type === 'vertex') {
+      let n = snap(raw, { shape: d.shape, i: d.i });
+      if (e.shiftKey) {
+        const prev = d.shape.pts[(d.i - 1 + d.shape.pts.length) % d.shape.pts.length];
+        n = ortho(prev, n);
+      }
+      d.shape.pts[d.i] = { x: n.x, y: n.y };
+      P().bump(d.shape);
+      P().touch();
+      return;
+    }
+    if (d.type === 'move') {
+      let dx = raw.x - d.start.x, dy = raw.y - d.start.y;
+      if (e.shiftKey) { if (Math.abs(dx * st().aspect) > Math.abs(dy)) dy = 0; else dx = 0; }
+      d.orig.forEach((o) => {
+        o.s.pts = o.pts.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+        P().bump(o.s);
+      });
+      P().touch();
+      return;
+    }
+    if (d.type === 'marquee') { d.b = raw; }
+  }
+
+  function onUp(e) {
+    if (!E.drag) return;
+    const d = E.drag;
+    E.drag = null;
+    if (d.type === 'freehand') {
+      if (d.pts.length > 2) {
+        P().snapshot();
+        const simplified = U.rdp(d.pts, pxToN(3));
+        P().add(P().newShape(simplified, !!e.shiftKey));
+      }
+      return;
+    }
+    if (d.type === 'marquee') {
+      const x0 = Math.min(d.a.x, d.b.x), x1 = Math.max(d.a.x, d.b.x);
+      const y0 = Math.min(d.a.y, d.b.y), y1 = Math.max(d.a.y, d.b.y);
+      if (Math.abs(x1 - x0) * st().rect.w > 4) {
+        P().shapes.forEach((s) => {
+          if (!s.visible || s.locked) return;
+          if (s.pts.some((p) => p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1)) P().sel.add(s.id);
+        });
+      }
+      UV.bus.emit('project:changed');
+    }
+  }
+
+  function onDbl() {
+    if (UV.app.mode !== 'map') return;
+    if (E.tool === 'pen' && E.pending) finishPen(false);
+  }
+
+  function finishPen(closed) {
+    const pend = E.pending;
+    E.pending = null;
+    if (!pend || pend.pts.length < 2) { UV.bus.emit('editor:pending'); return; }
+    P().snapshot();
+    const sh = P().newShape(pend.pts, closed);
+    P().add(sh);
+  }
+  E.finishPen = finishPen;
+
+  /* ---- editing keys ---- */
+  E.key = function (e) {
+    const k = e.key;
+    if (UV.app.mode !== 'map') return false;
+    if (k === 'Escape') { E.pending = null; P().sel = new Set(); UV.bus.emit('project:changed'); return true; }
+    if (k === 'Enter') { if (E.pending) { finishPen(E.pending.pts.length > 2 && !e.shiftKey); return true; } }
+    if (k === 'Backspace' || k === 'Delete') {
+      if (E.pending) { E.pending.pts.pop(); if (!E.pending.pts.length) E.pending = null; UV.bus.emit('editor:pending'); return true; }
+      const ids = [...P().sel];
+      if (ids.length) { P().snapshot(); P().remove(ids); return true; }
+    }
+    if (k.startsWith('Arrow')) {
+      const step = pxToN(e.shiftKey ? 10 : 1);
+      const dx = (k === 'ArrowLeft' ? -step : k === 'ArrowRight' ? step : 0) / st().aspect;
+      const dy = k === 'ArrowUp' ? -step : k === 'ArrowDown' ? step : 0;
+      const sel = P().selected();
+      if (sel.length) {
+        sel.forEach((s) => { s.pts = s.pts.map((p) => ({ x: p.x + dx, y: p.y + dy })); P().bump(s); });
+        P().touch();
+        return true;
+      }
+    }
+    if ((k === 'd' || k === 'D') && (e.ctrlKey || e.metaKey)) {
+      const sel = P().selected();
+      if (sel.length) {
+        P().snapshot();
+        sel.forEach((s) => {
+          const c = JSON.parse(JSON.stringify(s));
+          c.id = U.uid('sh');
+          c.name = s.name + ' copy';
+          c.pts = c.pts.map((p) => ({ x: p.x + pxToN(12) / st().aspect, y: p.y + pxToN(12) }));
+          P().shapes.push(c);
+        });
+        P().touch();
+      }
+      return true;
+    }
+    if (!e.ctrlKey && !e.metaKey) {
+      if (k === 'v') { E.setTool('select'); return true; }
+      if (k === 'p') { E.setTool('pen'); return true; }
+      if (k === 'b') { E.setTool('draw'); return true; }
+      if (k === 'a') { E.setTool('vertex'); return true; }
+      if (k === 'c') {
+        const sel = P().selected();
+        if (sel.length) { P().snapshot(); sel.forEach((s) => { s.closed = !s.closed; P().bump(s); }); P().touch(); }
+        return true;
+      }
+      if (k === 'g') { E.grid = !E.grid; UV.bus.emit('editor:tool'); return true; }
+    }
+    return false;
+  };
+
+  /* ---- map rendering ---- */
+  E.render = function (ctx) {
+    const s = st(), r = s.rect, prj = P();
+
+    /* reference photo, letterboxed into the design rect */
+    if (prj._img && prj.ref.visible) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip();
+      ctx.globalAlpha = prj.ref.opacity;
+      const img = prj._img;
+      const ia = img.width / img.height;
+      let w, h;
+      if (prj.ref.fit === 'contain' ? ia > s.aspect : ia < s.aspect) { w = r.w; h = r.w / ia; }
+      else { h = r.h; w = r.h * ia; }
+      ctx.drawImage(img, r.x + (r.w - w) / 2, r.y + (r.h - h) / 2, w, h);
+      ctx.restore();
+    }
+
+    if (E.grid) drawGrid(ctx);
+
+    /* design rect border — this is exactly what fills the projector */
+    ctx.strokeStyle = 'rgba(120,150,180,0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+
+    prj.shapes.forEach((sh) => {
+      if (!sh.visible) return;
+      const sel = prj.sel.has(sh.id);
+      const pts = U.outline(sh.pts, sh.closed).map((p) => s.n2s(p));
+      if (pts.length > 1) {
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+        if (sh.closed) {
+          ctx.closePath();
+          ctx.fillStyle = U.rgba(sh.color, sel ? 0.13 : 0.05);
+          ctx.fill();
+        }
+        ctx.strokeStyle = U.rgba(sh.color, sel ? 1 : 0.6);
+        ctx.lineWidth = sel ? 2 : 1.25;
+        ctx.stroke();
+      }
+      if (sel || E.tool === 'vertex') drawVerts(ctx, sh, sel);
+    });
+
+    /* pen preview */
+    if (E.pending && E.pending.pts.length) {
+      const pts = E.pending.pts.map((p) => s.n2s(p));
+      let cur = E.cursor;
+      if (E.shiftKey) cur = ortho(E.pending.pts[E.pending.pts.length - 1], cur);
+      const c = s.n2s(cur);
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.lineTo(c.x, c.y);
+      ctx.strokeStyle = '#ffd24d';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(pts[0].x, pts[0].y);
+      ctx.strokeStyle = 'rgba(255,210,77,0.35)';
+      ctx.stroke();
+      ctx.setLineDash([]);
+      pts.forEach((p, i) => {
+        ctx.fillStyle = i === 0 ? '#fff' : '#ffd24d';
+        ctx.fillRect(p.x - 3, p.y - 3, 6, 6);
+      });
+    }
+
+    /* freehand preview */
+    if (E.drag && E.drag.type === 'freehand') {
+      const pts = E.drag.pts.map((p) => s.n2s(p));
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.strokeStyle = '#ffd24d';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    /* marquee */
+    if (E.drag && E.drag.type === 'marquee') {
+      const a = s.n2s(E.drag.a), b = s.n2s(E.drag.b);
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.setLineDash([3, 3]);
+      ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+      ctx.setLineDash([]);
+    }
+  };
+
+  function drawVerts(ctx, sh, sel) {
+    const s = st();
+    sh.pts.forEach((p, i) => {
+      const q = s.n2s(p);
+      ctx.fillStyle = sel ? '#ffffff' : 'rgba(255,255,255,0.5)';
+      ctx.fillRect(q.x - 3, q.y - 3, 6, 6);
+      if (i === 0 && sel) {
+        ctx.strokeStyle = '#ffd24d';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(q.x - 5, q.y - 5, 10, 10);
+      }
+    });
+  }
+
+  function drawGrid(ctx) {
+    const s = st(), r = s.rect;
+    const g = (E.gridSize / 1000) * r.h;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip();
+    ctx.strokeStyle = 'rgba(255,255,255,0.055)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = r.x; x <= r.x + r.w + 0.5; x += g) { ctx.moveTo(Math.round(x) + 0.5, r.y); ctx.lineTo(Math.round(x) + 0.5, r.y + r.h); }
+    for (let y = r.y; y <= r.y + r.h + 0.5; y += g) { ctx.moveTo(r.x, Math.round(y) + 0.5); ctx.lineTo(r.x + r.w, Math.round(y) + 0.5); }
+    ctx.stroke();
+    /* centre cross */
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.beginPath();
+    ctx.moveTo(r.x + r.w / 2, r.y); ctx.lineTo(r.x + r.w / 2, r.y + r.h);
+    ctx.moveTo(r.x, r.y + r.h / 2); ctx.lineTo(r.x + r.w, r.y + r.h / 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+})(window.UV);
+
+/* ---- helpers for draw() --------------------------------------------------- */
+(function (UV) {
+  const U = UV.util, S = UV.stage;
+
+  window.u = (v) => S.u(v);
+  window.rgba = U.rgba;
+  window.clamp = (v, a, b) => U.clamp(v, a === undefined ? 0 : a, b === undefined ? 1 : b);
+  window.lerp = U.lerp;
+  window.px = (s) => U.outline(s.pts, s.closed).map(S.n2s);
+  window.center = (s) => S.n2s(U.centroid(s.pts));
+  window.bounds = (s) => U.bbox(s.pts.map(S.n2s));
+  window.pathOf = function (ctx, s) {
+    const pts = s.pts.map(S.n2s);
+    ctx.beginPath();
+    if (!pts.length) return;
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    if (s.closed) ctx.closePath();
+  };
+  window.clipTo = function (ctx, s) { window.pathOf(ctx, s); ctx.clip(); };
+  window.along = function (s, f) {
+    const pts = window.px(s);
+    const cum = U.cum(pts);
+    return U.pointAt(pts, cum, ((f % 1) + 1) % 1 * cum.total);
+  };
+  /* W: the design rect (the projected area), always the current one */
+  Object.defineProperty(window, 'W', { get: () => S.rect });
+})(window.UV);
+
+/* ---- control panel ------------------------------------------------------- */
+(function (UV) {
+  const UI = (UV.ui = {});
+  const $ = (id) => document.getElementById(id);
+  const P = () => UV.project;
+
+  function el(tag, cls, txt) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (txt !== undefined) e.textContent = txt;
+    return e;
+  }
+
+  const TOOLS = [
+    { id: 'select', label: 'Select', key: 'V' },
+    { id: 'pen', label: 'Pen', key: 'P' },
+    { id: 'draw', label: 'Freehand', key: 'B' },
+    { id: 'vertex', label: 'Points', key: 'A' },
+  ];
+  const HINTS = {
+    select: 'drag = move · shift+click = add to selection · drag empty = marquee · arrows nudge · C closes/opens shape',
+    pen: 'click to place points · shift = 45° · click the first point or Enter to close · Enter+shift = leave open · Esc cancels',
+    draw: 'drag to draw freehand · released stroke is simplified into points',
+    vertex: 'drag points · click an edge to insert a point · alt+click a point to delete it',
+  };
+
+  UI.init = function () {
+    buildTools();
+    bindMode();
+    bindMap();
+    bindPlay();
+    UV.bus.on('project:changed', () => { UI.refresh(); });
+    UV.bus.on('editor:tool', () => { UI.refresh(); });
+    UV.bus.on('editor:pending', () => { UI.refresh(); });
+    UI.refresh();
+  };
+
+  function bindMode() {
+    document.querySelectorAll('.modes button').forEach((b) => {
+      b.onclick = () => UV.app.setMode(b.dataset.mode);
+    });
+    $('btnCollapse').onclick = () => UV.app.togglePanel();
+    $('btnFull').onclick = () => UV.stage.requestFullscreen();
+  }
+
+  function buildTools() {
+    const box = $('tools');
+    box.innerHTML = '';
+    TOOLS.forEach((t) => {
+      const b = el('button', 'tool', t.label);
+      b.title = t.label + '  (' + t.key + ')';
+      b.dataset.tool = t.id;
+      b.onclick = () => UV.editor.setTool(t.id);
+      box.appendChild(b);
+    });
+  }
+
+  function bindMap() {
+    $('gridChk').onchange = (e) => { UV.editor.grid = e.target.checked; };
+    $('snapGridChk').onchange = (e) => { UV.editor.snapGrid = e.target.checked; };
+    $('snapVertChk').onchange = (e) => { UV.editor.snapVertex = e.target.checked; };
+    $('gridSize').oninput = (e) => { UV.editor.gridSize = +e.target.value; };
+
+    $('btnMatchScreen').onclick = () => {
+      P().aspect = UV.stage.screenAspect();
+      UV.stage.setAspect(P().aspect);
+      P().touch();
+    };
+    $('aspectInput').onchange = (e) => {
+      const v = String(e.target.value).trim();
+      let a = NaN;
+      if (v.includes(':')) { const [w, h] = v.split(':').map(Number); a = w / h; }
+      else if (v.includes('x')) { const [w, h] = v.split('x').map(Number); a = w / h; }
+      else a = parseFloat(v);
+      if (a > 0.1 && a < 10) { P().aspect = a; UV.stage.setAspect(a); P().touch(); }
+      UI.refresh();
+    };
+
+    $('refFile').onchange = (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => { P().setRef(r.result); P().touch(); };
+      r.readAsDataURL(f);
+    };
+    $('refClear').onclick = () => { P().setRef(null); P().touch(); };
+    $('refOpacity').oninput = (e) => { P().ref.opacity = +e.target.value; };
+    $('refVisible').onchange = (e) => { P().ref.visible = e.target.checked; };
+    $('refFit').onchange = (e) => { P().ref.fit = e.target.value; };
+
+    $('btnExport').onclick = () => {
+      const blob = new Blob([JSON.stringify(P().serialize(true), null, 2)], { type: 'application/json' });
+      const a = el('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = (P().name || 'ultraviolet') + '.uvmap.json';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    };
+    $('btnImport').onclick = () => $('importFile').click();
+    $('importFile').onchange = (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => {
+        try { P().snapshot(); P().load(JSON.parse(r.result)); }
+        catch (err) { alert('Could not read that file: ' + err.message); }
+      };
+      r.readAsText(f);
+      e.target.value = '';
+    };
+    $('btnClearShapes').onclick = () => {
+      if (confirm('Delete every shape in this map?')) P().clear();
+    };
+    $('projName').onchange = (e) => { P().name = e.target.value; P().touch(); };
+  }
+
+  function bindPlay() {
+    $('btnPlay').onclick = () => { UV.app.playing = !UV.app.playing; UI.refresh(); };
+    $('btnRestart').onclick = () => { UV.app.time = 0; UV.app.playing = true; UI.refresh(); };
+    $('speedInput').oninput = (e) => {
+      UV.app.speed = +e.target.value;
+      $('speedVal').textContent = (+e.target.value).toFixed(2) + 'x';
+    };
+  }
+
+  /* ---- shape list ---- */
+  let shapeSig = '';
+  function shapeSignature() {
+    return P().shapes.map((s) => [s.id, s.name, s.color, s.visible, s.locked, s.closed, s.pts.length, P().sel.has(s.id)].join(',')).join('|');
+  }
+
+  function buildShapeList() {
+    const box = $('shapeList');
+    box.innerHTML = '';
+    if (!P().shapes.length) {
+      box.appendChild(el('div', 'empty', 'No shapes yet — pick the Pen and click out a shape over your object.'));
+      return;
+    }
+    P().shapes.forEach((s, idx) => {
+      const row = el('div', 'srow' + (P().sel.has(s.id) ? ' sel' : ''));
+
+      const eye = el('button', 'icon', s.visible ? '◉' : '○');
+      eye.title = 'show / hide';
+      eye.onclick = (ev) => { ev.stopPropagation(); s.visible = !s.visible; P().touch(); };
+
+      const col = el('input', 'swatch');
+      col.type = 'color';
+      col.value = s.color;
+      col.oninput = () => { s.color = col.value; P().touch(); };
+      col.onclick = (ev) => ev.stopPropagation();
+
+      const name = el('input', 'sname');
+      name.value = s.name;
+      name.onchange = () => { s.name = name.value; P().touch(); };
+      name.onclick = (ev) => ev.stopPropagation();
+
+      const meta = el('span', 'meta', s.pts.length + (s.closed ? '△' : '―'));
+
+      const lock = el('button', 'icon', s.locked ? '■' : '□');
+      lock.title = 'lock';
+      lock.onclick = (ev) => { ev.stopPropagation(); s.locked = !s.locked; P().touch(); };
+
+      const up = el('button', 'icon', '↑');
+      up.title = 'move up';
+      up.onclick = (ev) => {
+        ev.stopPropagation();
+        if (idx > 0) { P().snapshot(); const a = P().shapes; [a[idx - 1], a[idx]] = [a[idx], a[idx - 1]]; P().touch(); }
+      };
+
+      const del = el('button', 'icon danger', '✕');
+      del.title = 'delete';
+      del.onclick = (ev) => { ev.stopPropagation(); P().snapshot(); P().remove([s.id]); };
+
+      row.onclick = (ev) => {
+        if (ev.shiftKey) { if (P().sel.has(s.id)) P().sel.delete(s.id); else P().sel.add(s.id); }
+        else P().sel = new Set([s.id]);
+        UV.bus.emit('project:changed');
+      };
+      [eye, col, name, meta, lock, up, del].forEach((e) => row.appendChild(e));
+      box.appendChild(row);
+    });
+  }
+
+  function buildShapeProps() {
+    const box = $('shapeProps');
+    box.innerHTML = '';
+    const sel = P().selected();
+    if (!sel.length) { box.appendChild(el('div', 'empty', 'Nothing selected.')); return; }
+    box.appendChild(el('div', 'muted', sel.length === 1
+      ? sel[0].name + ' — ' + sel[0].pts.length + ' points, ' + (sel[0].closed ? 'closed' : 'open')
+      : sel.length + ' shapes selected'));
+    const row = el('div', 'row');
+    const bClose = el('button', 'mini', 'closed / open  (C)');
+    bClose.onclick = () => { P().snapshot(); sel.forEach((s) => { s.closed = !s.closed; P().bump(s); }); P().touch(); };
+    const bRev = el('button', 'mini', 'reverse points');
+    bRev.onclick = () => { P().snapshot(); sel.forEach((s) => { s.pts.reverse(); P().bump(s); }); P().touch(); };
+    row.appendChild(bClose); row.appendChild(bRev);
+    box.appendChild(row);
+  }
+
+  /* ---- refresh ---- */
+  UI.refresh = function () {
+    const mode = UV.app.mode;
+    document.querySelectorAll('.modes button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mode));
+    $('secMap').hidden = mode !== 'map';
+    $('secShow').hidden = mode !== 'show';
+    document.querySelectorAll('#tools .tool').forEach((b) => b.classList.toggle('on', b.dataset.tool === UV.editor.tool));
+    $('hint').textContent = mode === 'map' ? HINTS[UV.editor.tool] || '' : '';
+
+    const sig = shapeSignature();
+    if (sig !== shapeSig) { shapeSig = sig; buildShapeList(); buildShapeProps(); }
+
+    const asp = $('aspectInput');
+    if (document.activeElement !== asp) asp.value = P().aspect.toFixed(4);
+    $('aspectNote').textContent = 'screen is ' + (window.screen.width + '×' + window.screen.height) +
+      ' (' + UV.stage.screenAspect().toFixed(4) + ')';
+    if (document.activeElement !== $('projName')) $('projName').value = P().name;
+    $('refOpacity').value = P().ref.opacity;
+    $('refVisible').checked = P().ref.visible;
+    $('refFit').value = P().ref.fit;
+    $('gridChk').checked = UV.editor.grid;
+    $('snapGridChk').checked = UV.editor.snapGrid;
+    $('snapVertChk').checked = UV.editor.snapVertex;
+    $('btnPlay').textContent = UV.app.playing ? '‖ pause' : '▶ play';
+  };
+
+  UI.refreshTime = function () {
+    $('timeLabel').textContent = 't = ' + UV.app.time.toFixed(2) + 's';
+  };
+})(window.UV);
+
+/* ---- boot, main loop, global keys ---------------------------------------- */
+(function (UV) {
+  const app = (UV.app = { mode: 'map', panel: true, time: 0, playing: true, speed: 1 });
+
+  app.setMode = function (m) {
+    app.mode = m;
+    document.body.classList.toggle('showmode', m === 'show');
+    if (m === 'show') UV.editor.pending = null;
+    UV.ui.refresh();
+  };
+  app.togglePanel = function () {
+    app.panel = !app.panel;
+    document.body.classList.toggle('nopanel', !app.panel);
+  };
+
+  function starterShape() {
+    /* a hexagon in the middle so there is something to draw on first run */
+    const a = UV.stage.aspect;
+    const pts = [];
+    for (let i = 0; i < 6; i++) {
+      const th = (i / 6) * Math.PI * 2 - Math.PI / 2;
+      pts.push({ x: 0.5 + (Math.cos(th) * 0.22) / a, y: 0.5 + Math.sin(th) * 0.22 });
+    }
+    UV.project.shapes.push(UV.project.newShape(pts, true, 'starter hex'));
+  }
+
+  /* run the student's draw() so that one bad line shows an error instead of
+     freezing the page */
+  const errBox = () => document.getElementById('err');
+  let lastErr = '';
+  function runDraw(ctx) {
+    const shapes = UV.project.shapes.filter((s) => s.visible && s.pts.length > 1);
+    ctx.save();
+    try {
+      if (typeof window.draw === 'function') window.draw(ctx, app.time, shapes);
+      if (lastErr) { lastErr = ''; errBox().hidden = true; }
+    } catch (e) {
+      const msg = 'draw() error: ' + (e && e.message ? e.message : e);
+      if (msg !== lastErr) {
+        lastErr = msg;
+        errBox().textContent = msg + '\n(open the browser console, F12, for the line number)';
+        errBox().hidden = false;
+        console.error(e);
+      }
+    }
+    ctx.restore();
+  }
+
+  function boot() {
+    const canvas = document.getElementById('stage');
+    UV.stage.init(canvas);
+    UV.stage.setAspect(UV.stage.screenAspect());
+
+    if (!UV.project.loadLocal()) {
+      UV.project.aspect = UV.stage.screenAspect();
+      UV.stage.setAspect(UV.project.aspect);
+      starterShape();
+    }
+
+    UV.editor.attach(canvas);
+    UV.ui.init();
+    window.addEventListener('keydown', onKey);
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      if (app.playing) app.time += dt * app.speed;
+      UV.stage.track();
+      const ctx = UV.stage.ctx;
+      UV.stage.begin();
+      if (app.mode === 'map') {
+        UV.editor.render(ctx);
+        if (document.getElementById('previewChk').checked) runDraw(ctx);
+      } else {
+        runDraw(ctx);
+      }
+      UV.ui.refreshTime();
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function onKey(e) {
+    const tag = (e.target && e.target.tagName) || '';
+    const typing = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA';
+
+    if (e.key === 'Tab') { e.preventDefault(); app.togglePanel(); return; }
+    if (typing) return;
+
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      if (e.shiftKey) UV.project.redo(); else UV.project.undo();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); UV.project.redo(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); UV.project.save(); return; }
+
+    if (e.key === 'f' || e.key === 'F') { UV.stage.requestFullscreen(); return; }
+    if (e.key === 'm' || e.key === 'M') { app.setMode(app.mode === 'map' ? 'show' : 'map'); return; }
+    if (e.key === ' ') { e.preventDefault(); app.playing = !app.playing; UV.ui.refresh(); return; }
+    if (app.mode === 'show' && (e.key === 'r' || e.key === 'R')) { app.time = 0; app.playing = true; UV.ui.refresh(); return; }
+
+    if (UV.editor.key(e)) { e.preventDefault(); UV.ui.refresh(); }
+  }
+
+  document.addEventListener('DOMContentLoaded', boot);
+})(window.UV);
+</script>
+</body>
+</html>
