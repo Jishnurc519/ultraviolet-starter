@@ -1,4 +1,4 @@
-# Ultraviolet — mapping starter
+# Mapping starter
 
 A projection mapper you can build on. Trace shapes over a real object, fill them with
 pictures or movies (flat or perspective-warped), stack effects on top as layers, and run
@@ -48,8 +48,7 @@ In **MAP**, trace the surfaces you're projecting onto.
 | `F` | fullscreen |
 | `M` | switch between MAP and PLAY |
 
-**Workflow:** put the projector where it will stay. Photograph the object *from the
-projector's position* and load the photo under **Reference image**, then trace it. Go
+**Workflow:** put the projector where it will stay and trace the object. Go
 fullscreen, project onto the real object, and nudge points with the Points tool until the
 edges sit right.
 
@@ -139,13 +138,13 @@ it is. Press `F` or Esc to come back.
 - **Autosave:** shapes, layers and settings are saved in this browser as you work.
   Pictures and movies are kept too.
 - **Setups:** under **Setups**, give the current state a name and click **save setup**. A
-  setup holds everything: shapes, fills, layers, reference photo, aspect and two-screen
+  setup holds everything: shapes, fills, layers, aspect and two-screen
   settings. **load** brings it back (Ctrl+Z undoes the shape change), **⇩** exports it,
   and clicking **✕** twice deletes it. Saving under an existing name replaces that setup.
 - **Export / import:** **export .json** saves the current setup as a file. Tick **with
   media** to put the pictures and movies the shapes use inside the file, so it works on
   another computer (videos make it big). **import** loads setup files and maps exported
-  from the full Ultraviolet app.
+  from the full app.
 
 Browser storage is per browser and per site. Setups saved on the GitHub Pages site aren't
 visible when you open `starter.html` from disk, and the other way round. Use export /
@@ -285,8 +284,7 @@ keys) and in IndexedDB (`uv.starter.media`, the media files).
   settings → allow *Window management*, then click **detect screens**.
 - **An effect is missing from + add layer:** check its `<script src>` line and the
   console (F12) for errors in the file.
-- **Storage full when saving a setup:** large reference photos are left out
-  automatically. Use **export .json** for a full copy.
+- **Storage full when saving a setup:** use **export .json** for a full copy.
 
 ## License
 

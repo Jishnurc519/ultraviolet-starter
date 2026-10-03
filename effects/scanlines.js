@@ -4,7 +4,7 @@
 
 UV.effect('scanlines', {
   label: 'Scanlines',
-  by: 'ultraviolet starter',
+  by: 'mapping starter',
   params: {
     spacing: { value: 14, min: 3, max: 120, label: 'spacing (u)' },
     thickness: { value: 0.4, min: 0.05, max: 1 },

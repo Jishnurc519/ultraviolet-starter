@@ -3,16 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ultraviolet — Mapping Starter</title>
+<title>Mapping Starter</title>
 <link rel="icon" href="data:,">
 <!--
-  ULTRAVIOLET STARTER
-  ===================
+  MAPPING STARTER
+  ===============
   A projection mapper you can build on. One file, no install, no build step:
   open it in Chrome or Edge (straight from disk is fine).
 
     MAP   trace shapes over your object (pen, freehand, point editing,
-          snapping, reference photo, undo), fill them with pictures or movies
+          snapping, undo), fill them with pictures or movies
           (flat or perspective-warped), save setups.
     PLAY  draws a stack of LAYERS over your shapes; each layer is one EFFECT.
 
@@ -179,7 +179,7 @@ body.showmode #panel { background: rgba(8, 9, 13, .96); }
 
 <aside id="panel">
   <header>
-    <div class="brand">ULTRAVIOLET<span class="sub">mapping starter</span></div>
+    <div class="brand">MAPPING<span class="sub">starter</span></div>
     <button id="btnFull" class="icon" title="Fullscreen (F)">&#9974;</button>
     <button id="btnCollapse" class="icon" title="Hide panel (Tab)">&#8213;</button>
   </header>
@@ -217,21 +217,6 @@ body.showmode #panel { background: rgba(8, 9, 13, .96); }
       <div id="mediaList" class="list"></div>
       <div class="muted">Load pictures or movies, select a shape and pick one under <b>fill</b>, or drop a file straight onto a shape. Movies loop and follow play / pause / restart / speed. Files are kept in this browser between reloads.</div>
 
-      <h3>Reference image</h3>
-      <div class="row wrap">
-        <input type="file" id="refFile" accept="image/*">
-        <button id="refClear" class="mini">clear</button>
-      </div>
-      <div class="row">
-        <label class="nf grow"><span>opacity</span><input type="range" id="refOpacity" min="0" max="1" step="0.01" value="0.45"></label>
-        <label class="chk"><input type="checkbox" id="refVisible" checked><span>show</span></label>
-        <select id="refFit" title="how the photo fills the design rect">
-          <option value="cover">cover</option>
-          <option value="contain">contain</option>
-        </select>
-      </div>
-      <div class="muted">Shoot the object from the projector's position, load it here, and trace over it.</div>
-
       <h3>Output</h3>
       <div class="row">
         <label class="nf grow"><span>aspect</span><input type="text" id="aspectInput" title="1.7778, 16:9 or 1920x1080"></label>
@@ -268,7 +253,7 @@ body.showmode #panel { background: rgba(8, 9, 13, .96); }
         <input type="file" id="importFile" accept="application/json,.json" hidden>
         <button id="btnClearShapes" class="mini danger">clear shapes</button>
       </div>
-      <div class="muted">Autosaves to this browser. Ctrl+Z / Ctrl+Shift+Z to undo. Imports setups and maps exported from here or from the full Ultraviolet app.</div>
+      <div class="muted">Autosaves to this browser. Ctrl+Z / Ctrl+Shift+Z to undo. Imports setups and maps exported from here or from the full app.</div>
 
       <h3>Setups</h3>
       <div class="row">
@@ -276,7 +261,7 @@ body.showmode #panel { background: rgba(8, 9, 13, .96); }
         <button id="btnSetupSave" class="mini">save setup</button>
       </div>
       <div id="setupList" class="list"></div>
-      <div class="muted" id="setupNote">A setup is the whole page: shapes, fills, reference photo, aspect, and the two-screen settings. Saving under an existing name replaces it. Setups stay in this browser; export one to move it.</div>
+      <div class="muted" id="setupNote">A setup is the whole page: shapes, fills, aspect, and the two-screen settings. Saving under an existing name replaces it. Setups stay in this browser; export one to move it.</div>
     </section>
 
     <!-- ================= PLAY ================= -->
@@ -421,7 +406,7 @@ body.showmode #panel { background: rgba(8, 9, 13, .96); }
 window.UV = window.UV || {};
 UV.effects = UV.effects || {};
 UV.effect = function (id, def) {
-  if (UV.effects[id]) console.warn('Ultraviolet: effect "' + id + '" was registered twice; the later one wins.');
+  if (UV.effects[id]) console.warn('Mapping starter: effect "' + id + '" was registered twice; the later one wins.');
   UV.effects[id] = Object.assign({ id: id, label: id, params: {} }, def);
   if (UV.bus) UV.bus.emit('effects:changed');
 };
@@ -1230,7 +1215,7 @@ window.UV = window.UV || {};
 (function (UV) {
   const U = UV.util;
   const KEY = 'uv.starter.v1';
-  /* the full Ultraviolet app's save; read once on first run so shapes traced
+  /* the full app's save; read once on first run so shapes traced
      there show up here, never written to */
   const APP_KEY = 'uv.project.v1';
 
@@ -1239,11 +1224,9 @@ window.UV = window.UV || {};
     aspect: 16 / 9,
     shapes: [],
     layers: null, /* the PLAY stack, bottom first; see UV.layers */
-    ref: { src: null, opacity: 0.45, visible: true, fit: 'cover' },
     sel: new Set(),
     _undo: [],
     _redo: [],
-    _img: null,
   });
 
   P.newShape = function (pts, closed, name) {
@@ -1307,27 +1290,21 @@ window.UV = window.UV || {};
     saveTimer = setTimeout(P.save, 400);
   };
 
-  P.serialize = function (withRef) {
+  P.serialize = function () {
     return {
       v: 1,
       name: P.name,
       aspect: P.aspect,
       shapes: P.shapes,
       layers: P.layers,
-      ref: withRef ? P.ref : { src: null, opacity: P.ref.opacity, visible: P.ref.visible, fit: P.ref.fit },
     };
   };
 
   P.save = function () {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(P.serialize(true)));
-    } catch (e) {
-      /* reference image is usually what blows the quota — retry without it */
-      try { localStorage.setItem(KEY, JSON.stringify(P.serialize(false))); } catch (e2) { /* give up quietly */ }
-    }
+    try { localStorage.setItem(KEY, JSON.stringify(P.serialize())); } catch (e) { /* give up quietly */ }
   };
 
-  /* accepts this file's saves and full Ultraviolet exports (their cues are ignored) */
+  /* accepts this file's saves and full app exports (their cues are ignored) */
   P.load = function (data) {
     if (!data) return false;
     P.name = data.name || 'untitled';
@@ -1335,9 +1312,7 @@ window.UV = window.UV || {};
     P.shapes = (data.shapes || []).map((s) => Object.assign({ rev: 1, visible: true, locked: false }, s));
     P.layers = Array.isArray(data.layers) ? data.layers : UV.layers.defaults();
     UV.layers.reset();
-    P.ref = Object.assign({ src: null, opacity: 0.45, visible: true, fit: 'cover' }, data.ref || {});
     P.sel = new Set();
-    P.setRef(P.ref.src);
     UV.stage.setAspect(P.aspect);
     P.touch();
     return true;
@@ -1351,14 +1326,6 @@ window.UV = window.UV || {};
       } catch (e) { /* try the next one */ }
     }
     return false;
-  };
-
-  P.setRef = function (src) {
-    P.ref.src = src || null;
-    if (!src) { P._img = null; return; }
-    const img = new Image();
-    img.onload = () => { P._img = img; UV.bus.emit('project:changed'); };
-    img.src = src;
   };
 
   P.clear = function () {
@@ -1636,7 +1603,7 @@ window.UV = window.UV || {};
 })(window.UV);
 
 /* ---- setups: named snapshots of the whole page ------------------------------
-   A setup = the project (shapes with their fills, reference photo, aspect,
+   A setup = the project (shapes with their fills, aspect,
    name) + the two-screen settings. Kept in localStorage under KEY; exported
    as a .json file, optionally with the media files inlined as data URLs. */
 (function (UV) {
@@ -1648,12 +1615,12 @@ window.UV = window.UV || {};
   };
   function write(list) { localStorage.setItem(KEY, JSON.stringify(list)); }
 
-  T.capture = function (withRef) {
+  T.capture = function () {
     const O = UV.screens;
     return {
       kind: 'uv-setup',
       v: 1,
-      project: UV.project.serialize(withRef !== false),
+      project: UV.project.serialize(),
       output: { span: O.span, preview: O.preview, pick: O.pick, last: O.last },
     };
   };
@@ -1663,13 +1630,11 @@ window.UV = window.UV || {};
     name = String(name || '').trim();
     if (!name) return 'Give the setup a name first.';
     const rest = T.list().filter((x) => x.name !== name);
-    for (const withRef of [true, false]) {
-      try {
-        write(rest.concat([{ name: name, saved: Date.now(), data: T.capture(withRef) }]));
-        UV.bus.emit('setups:changed');
-        return withRef || !UV.project.ref.src ? '' : 'Saved without the reference photo: it was too big for browser storage.';
-      } catch (e) { /* quota: retry without the reference photo */ }
-    }
+    try {
+      write(rest.concat([{ name: name, saved: Date.now(), data: T.capture() }]));
+      UV.bus.emit('setups:changed');
+      return '';
+    } catch (e) { /* quota */ }
     return 'Browser storage is full: export the setup to a file instead.';
   };
 
@@ -2194,20 +2159,6 @@ window.UV = window.UV || {};
   E.render = function (ctx) {
     const s = st(), r = s.rect, prj = P();
 
-    /* reference photo, letterboxed into the design rect */
-    if (prj._img && prj.ref.visible) {
-      ctx.save();
-      ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip();
-      ctx.globalAlpha = prj.ref.opacity;
-      const img = prj._img;
-      const ia = img.width / img.height;
-      let w, h;
-      if (prj.ref.fit === 'contain' ? ia > s.aspect : ia < s.aspect) { w = r.w; h = r.w / ia; }
-      else { h = r.h; w = r.h * ia; }
-      ctx.drawImage(img, r.x + (r.w - w) / 2, r.y + (r.h - h) / 2, w, h);
-      ctx.restore();
-    }
-
     if (E.showMedia) UV.media.render(ctx, prj.shapes);
 
     /* guides (grid, centre cross, border) only while the panel is out, so
@@ -2456,25 +2407,12 @@ window.UV = window.UV || {};
       UI.refresh();
     };
 
-    $('refFile').onchange = (e) => {
-      const f = e.target.files[0];
-      if (!f) return;
-      const r = new FileReader();
-      r.onload = () => { P().setRef(r.result); P().touch(); };
-      r.readAsDataURL(f);
-    };
-    $('refClear').onclick = () => { P().setRef(null); P().touch(); };
-
     $('mediaChk').onchange = (e) => { UV.editor.showMedia = e.target.checked; };
     $('mediaFile').onchange = (e) => {
       [...e.target.files].forEach((f) => UV.media.add(f));
       e.target.value = '';
     };
-    $('refOpacity').oninput = (e) => { P().ref.opacity = +e.target.value; };
-    $('refVisible').onchange = (e) => { P().ref.visible = e.target.checked; };
-    $('refFit').onchange = (e) => { P().ref.fit = e.target.value; };
-
-    $('btnExport').onclick = () => download(UV.setups.capture(), P().name || 'ultraviolet');
+    $('btnExport').onclick = () => download(UV.setups.capture(), P().name || 'setup');
     $('btnImport').onclick = () => $('importFile').click();
     $('importFile').onchange = (e) => {
       const f = e.target.files[0];
@@ -3120,9 +3058,6 @@ window.UV = window.UV || {};
       ' (' + UV.stage.screenAspect().toFixed(4) + ')';
     refreshScreens();
     if (document.activeElement !== $('projName')) $('projName').value = P().name;
-    $('refOpacity').value = P().ref.opacity;
-    $('refVisible').checked = P().ref.visible;
-    $('refFit').value = P().ref.fit;
     $('gridChk').checked = UV.editor.grid;
     $('snapGridChk').checked = UV.editor.snapGrid;
     $('snapVertChk').checked = UV.editor.snapVertex;

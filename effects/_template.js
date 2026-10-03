@@ -1,5 +1,5 @@
-/* Ultraviolet effect template
-   ===========================
+/* Effect template
+   ================
    1. Copy this file to effects/your-effect.js and rename the id below.
    2. Add one line near the end of the EFFECTS section in starter.html:
         <script src="effects/your-effect.js" onerror="this.remove()"></script>
