@@ -3,7 +3,10 @@
 A projection mapping starting point: trace shapes over a real object, then write your own
 effects on top of them. One self-contained HTML file, no install, no build, no server.
 
-**Open `starter.html` in Chrome.** That's it — it works straight from your disk.
+**Try it online:** https://jishnurc519.github.io/ultraviolet-starter/
+
+To write your own effects, download `starter.html` (or clone the repo) and open it in
+Chrome. That's it — it works straight from your disk.
 
 ## 1. Map
 
@@ -72,3 +75,7 @@ MAP to see your effect while you trace.
 Ideas: fill shapes one after another, run a dot round each outline with `along`, slide
 stripes through a shape with `clipTo`, set `ctx.globalCompositeOperation = 'lighter'` so
 overlaps glow.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Copy it, change it, build on it.
