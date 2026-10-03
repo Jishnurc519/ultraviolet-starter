@@ -4,20 +4,30 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Ultraviolet — Mapping Starter</title>
+<link rel="icon" href="data:,">
 <!--
   ULTRAVIOLET STARTER
   ===================
-  The Ultraviolet projection mapper with every effect stripped out. You get:
+  A projection mapper you can build on. One file, no install, no build step:
+  open it in Chrome or Edge (straight from disk is fine).
 
-    MAP  — trace shapes over your object (pen, freehand, point editing, snapping,
-           reference photo, undo, save / export / import).
-    PLAY — a black stage that calls YOUR draw() function every frame with the
-           shapes you traced.
+    MAP   trace shapes over your object (pen, freehand, point editing,
+          snapping, reference photo, undo), fill them with pictures or movies
+          (flat or perspective-warped), save setups.
+    PLAY  draws a stack of LAYERS over your shapes; each layer is one EFFECT.
 
-  Everything you need to write is in the first <script> block below, marked
-  "YOUR CODE". The rest of the file is the mapping engine; you can ignore it.
+  How this file is laid out, top to bottom:
 
-  One self-contained file: open it in Chrome, from file:// is fine.
+    <style>, panel HTML      the look of the control panel
+    EFFECTS                  <- the part you write. The effect registry, the
+                                draw() quick start, example effects, layer
+                                presets, and the rules for writing effects
+                                (including notes for AI assistants).
+    ENGINE                   everything else: stage and screens, media,
+                             setups, layers, the MAP editor, the panel, the
+                             main loop. You shouldn't need to change it.
+
+  See README.md for the full guide.
 -->
 <style>
 :root {
@@ -61,6 +71,22 @@ body.nopanel .hint, body.showmode .hint { opacity: 0; transition: opacity .25s; 
   transition: transform .18s ease;
 }
 body.nopanel #panel { transform: translateX(-100%); }
+/* span mode: the panel sits on the control screen; sliding it out would
+   slide it onto the projector, so it just disappears */
+body.span #panel { transition: none; }
+body.span.nopanel #panel { transform: none; visibility: hidden; }
+.layer { border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; }
+.layer.off { opacity: .5; }
+.layer .lhead { display: flex; align-items: center; gap: 4px; }
+.layer .lname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.layer .lname.missing { color: var(--danger); }
+.layer .lbody { padding: 2px 0 4px 2px; }
+.layer .lbody .row { margin: 3px 0; }
+.layer .lbody select { max-width: 130px; }
+.layer .pval { color: var(--dim); font-size: 10px; min-width: 34px; text-align: right; }
+.status { color: var(--dim); font-size: 10.5px; line-height: 1.5; margin: 4px 0; }
+.status.ok { color: #7fe3a0; }
+.status.warn { color: #ffd24d; }
 #panel header {
   display: flex; align-items: center; gap: 6px;
   padding: 10px 10px 8px; border-bottom: 1px solid var(--line);
@@ -134,6 +160,12 @@ code { color: var(--accent); }
 .swatch { flex: 0 0 auto; }
 .props { margin-top: 6px; }
 .scrub { width: 100%; margin: 4px 0 8px; }
+.mrow { cursor: default; }
+.mrow .kind { color: var(--accent); font-size: 10px; min-width: 30px; }
+.mrow .mname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .mname.wait { color: var(--dim); }
+.props select { max-width: 150px; }
+body.dropping #stage { outline: 2px dashed var(--accent); outline-offset: -6px; }
 
 body.showmode #stage { cursor: none; }
 body.showmode #panel { background: rgba(8, 9, 13, .96); }
@@ -168,6 +200,7 @@ body.showmode #panel { background: rgba(8, 9, 13, .96); }
         <label class="chk"><input type="checkbox" id="snapGridChk"><span>snap grid</span></label>
         <label class="chk"><input type="checkbox" id="snapVertChk" checked><span>snap points</span></label>
         <label class="chk"><input type="checkbox" id="previewChk"><span>preview fx</span></label>
+        <label class="chk"><input type="checkbox" id="mediaChk" checked><span>media</span></label>
       </div>
       <div class="row">
         <label class="nf"><span>grid</span><input type="number" id="gridSize" value="25" min="5" max="200" step="1"></label>
@@ -176,6 +209,13 @@ body.showmode #panel { background: rgba(8, 9, 13, .96); }
       <h3>Shapes</h3>
       <div id="shapeList" class="list"></div>
       <div id="shapeProps" class="props"></div>
+
+      <h3>Pictures &amp; movies</h3>
+      <div class="row wrap">
+        <input type="file" id="mediaFile" accept="image/*,video/*" multiple>
+      </div>
+      <div id="mediaList" class="list"></div>
+      <div class="muted">Load pictures or movies, select a shape and pick one under <b>fill</b>, or drop a file straight onto a shape. Movies loop and follow play / pause / restart / speed. Files are kept in this browser between reloads.</div>
 
       <h3>Reference image</h3>
       <div class="row wrap">
@@ -200,17 +240,43 @@ body.showmode #panel { background: rgba(8, 9, 13, .96); }
       <div class="muted" id="aspectNote"></div>
       <div class="muted">The map is pinned to the physical screen: a window shows the part of it underneath, and fullscreen (F11 or F) reveals the rest without moving anything.</div>
 
+      <h3>Two screens</h3>
+      <div class="row wrap">
+        <label class="chk" title="one window over the laptop screen and the projector: controls on one, the map on the other"><input type="checkbox" id="spanChk"><span>span two screens</span></label>
+        <label class="chk"><input type="checkbox" id="previewOutChk" checked><span>preview</span></label>
+      </div>
+      <div id="spanBox" hidden>
+        <div class="row wrap">
+          <label class="nf"><span>output</span><select id="outPick"></select></label>
+          <button id="btnDetect" class="mini">detect screens</button>
+        </div>
+        <div id="spanStatus" class="status"></div>
+        <div class="row wrap">
+          <button id="btnSpanWin" class="mini" title="opens a window stretched over both screens">open spanning window</button>
+        </div>
+        <div class="muted">Set Windows to <b>Extend</b> (Win+P), then stretch this window over both screens: un-maximize it and drag its edges, or use <b>open spanning window</b>. The map is pinned to the output screen; this panel and the preview stay on the other. Edit in the preview or right on the projector. <b>F</b> puts the page fullscreen on the output screen only, as browsers can't go fullscreen across two screens. Tip: in Windows display settings, put the projector below or lower than the laptop screen so the browser's title bar stays off it.</div>
+      </div>
+
       <h3>Project</h3>
       <div class="row">
         <label class="nf grow"><span>name</span><input type="text" id="projName"></label>
       </div>
       <div class="row wrap">
-        <button id="btnExport" class="mini">export .json</button>
+        <button id="btnExport" class="mini" title="the current setup as a file">export .json</button>
+        <label class="chk" title="put the pictures and movies the shapes use inside the file, so it works on another computer (can be big)"><input type="checkbox" id="exportMedia"><span>with media</span></label>
         <button id="btnImport" class="mini">import</button>
         <input type="file" id="importFile" accept="application/json,.json" hidden>
         <button id="btnClearShapes" class="mini danger">clear shapes</button>
       </div>
-      <div class="muted">Autosaves to this browser. Ctrl+Z / Ctrl+Shift+Z to undo. Imports maps exported from the full Ultraviolet app too.</div>
+      <div class="muted">Autosaves to this browser. Ctrl+Z / Ctrl+Shift+Z to undo. Imports setups and maps exported from here or from the full Ultraviolet app.</div>
+
+      <h3>Setups</h3>
+      <div class="row">
+        <label class="nf grow"><span>name</span><input type="text" id="setupName" placeholder="e.g. gallery wall"></label>
+        <button id="btnSetupSave" class="mini">save setup</button>
+      </div>
+      <div id="setupList" class="list"></div>
+      <div class="muted" id="setupNote">A setup is the whole page: shapes, fills, reference photo, aspect, and the two-screen settings. Saving under an existing name replaces it. Setups stay in this browser; export one to move it.</div>
     </section>
 
     <!-- ================= PLAY ================= -->
@@ -224,7 +290,17 @@ body.showmode #panel { background: rgba(8, 9, 13, .96); }
         <label class="nf grow"><span>speed</span><input type="range" id="speedInput" min="0" max="3" step="0.05" value="1"></label>
         <span id="speedVal" class="muted">1.00x</span>
       </div>
-      <div class="muted">PLAY calls <code>draw(ctx, t, shapes)</code> from the first script in this file every frame. Edit it, save, reload the page. Errors show up in the top-right corner.</div>
+
+      <h3>Layers</h3>
+      <div id="layerList" class="list"></div>
+      <div class="row wrap">
+        <select id="addFx" title="effect for the new layer"></select>
+        <button id="btnAddLayer" class="mini">+ add layer</button>
+      </div>
+      <div class="row wrap">
+        <select id="presetPick" title="replace the layers with a ready-made stack"></select>
+      </div>
+      <div class="muted">The top of the list is drawn last, on top. Each layer runs one effect on all shapes or on chosen ones, with its own opacity and blend. Effects live in the EFFECTS section of this file; write your own there or in effects/. Errors show up in the corner.</div>
       <div class="muted">space play/pause · R restart · F fullscreen · Tab hides the panel · M back to MAP</div>
     </section>
 
@@ -232,21 +308,87 @@ body.showmode #panel { background: rgba(8, 9, 13, .96); }
 </aside>
 
 <!-- =====================================================================
-     YOUR CODE
+     EFFECTS
      =====================================================================
-     draw(ctx, t, shapes) runs every frame in PLAY mode.
+     PLAY draws a stack of LAYERS, bottom to top. Each layer runs one EFFECT
+     on some or all of your shapes, with its own opacity, blend mode and
+     settings, all set in the panel and saved with the project and setups.
 
-       ctx     the canvas 2D context, in CSS pixels; the screen is already black
-       t       seconds since play / restart
-       shapes  the visible shapes, in list order. Each one has:
-                 name, color ('#rrggbb'), closed (true/false),
-                 pts: [{x, y}, ...] in 0..1 coordinates inside the design rect
+     An effect is a self-contained block that registers itself:
+
+       UV.effect('my-effect', {
+         label: 'My effect',            // shown in the panel
+         by: 'your name',               // optional credit
+         params: {                      // optional: each becomes a control
+           speed: { value: 1, min: 0, max: 5 },        // number  -> slider
+           color: { value: '#4df3ff' },                // '#hex'  -> colour picker
+           glow:  { value: true },                     // boolean -> checkbox
+           mode:  { value: 'in', options: ['in', 'out'] }, // options -> dropdown
+         },
+         draw(ctx, t, shapes, p, state) {
+           // ctx     canvas 2D context, CSS pixels. Save/restore is done for
+           //         you, so set any styles you like.
+           // t       seconds since play / restart
+           // shapes  the layer's shapes (visible ones; its target in the panel)
+           // p       the params' current values: p.speed, p.color, ...
+           // state   an object kept for this layer between frames (particles,
+           //         trails...); emptied on restart
+         },
+       });
+
+     Effects never touch each other: opacity and blend are applied by the
+     layer, so the same effect can be stacked twice with different settings.
+     An error in one effect shows in the corner and skips just that layer.
+
+     ---------------------------------------------------------------------
+     NOTES FOR AI ASSISTANTS (LLMs) ADDING OR LAYERING EFFECTS
+     ---------------------------------------------------------------------
+     If you are an AI model asked to add an effect, a look, or a "layered"
+     result to this file, follow these rules. They keep everyone's work
+     composable.
+
+     1. Add, don't edit. Create a NEW effect with UV.effect('unique-id', {...})
+        in its own <script> block in this section (or a new file in effects/
+        plus one <script src> line at the end of this section). Don't change
+        the engine (the big script after this section) or other people's
+        effects to get a look; layer instead.
+     2. One idea per effect. "Neon outline with sparkles over a movie" is THREE
+        layers (media, outline, sparkle), not one effect. Combine them as a
+        preset in UV.presets (below) so it's one click to apply.
+     3. Expose the knobs as params. Anything a person might tune (speed, size,
+        colour, count) goes in params with a sensible value/min/max; read it
+        from p. Sizes in design units via u(), never raw pixels, so the look
+        holds on any projector. Never hard-code shape names or counts.
+     4. Draw only in the shapes handed to you, in this frame. Don't keep your
+        own references to UV.project.shapes, don't call
+        requestAnimationFrame, don't clear the canvas (it's cleared, and lower
+        layers are already drawn: clearing wipes them). Use
+        ctx.globalCompositeOperation inside draw() freely: the layer is
+        isolated when it needs to be.
+     5. Time comes from t only (not Date.now / performance.now), so pause,
+        restart and speed work. Randomness: UV.util.mulberry32(seed), so a
+        replay looks the same. Anything that must persist between frames goes
+        in state.
+     6. Keep it light: this runs 60 times a second on the projector. Precompute
+        in state, avoid per-pixel loops and getImageData, cap counts in params.
+     7. Opacity and blend belong to the LAYER, set in the panel or in a preset,
+        not hard-wired into an effect.
+     8. Test: open the page, PLAY, "+ add layer" with your effect, move the
+        sliders, then stack it with others (presets menu). No errors should
+        appear in the top-right corner.
+
+     Where to put yours:
+       - in a <script> block in this section, like the examples below, or
+       - in its own file in effects/ (copy effects/_template.js) plus a
+         <script src="effects/your-file.js"></script> line at the end of this
+         section. Separate files keep merges painless when several people
+         add effects to the same project.
 
      Helpers (all return pixels, so you can draw with them directly):
 
        px(shape)         the shape's points in pixels (closed shapes repeat the first point)
        pathOf(ctx, s)    begins a path along the shape; then ctx.stroke() or ctx.fill()
-       clipTo(ctx, s)    clips drawing to the inside of a closed shape (wrap in save/restore)
+       clipTo(ctx, s)    clips drawing to the inside of a closed shape
        center(s)         {x, y} centre of the shape
        bounds(s)         {x0, y0, x1, y1, w, h} bounding box
        u(v)              a size in design units -> pixels; 1000 u = full height of the
@@ -254,11 +396,40 @@ body.showmode #panel { background: rgba(8, 9, 13, .96); }
        rgba(hex, a)      '#4df3ff', 0.5  ->  'rgba(77,243,255,0.5)'
        along(s, f)       the point {x, y, tx, ty} at fraction f (0..1) of the way round
                          the outline, plus the direction of travel (tx, ty)
-       clamp(v)          v limited to 0..1 (or clamp(v, min, max))
+       clamp(v)          v limited to 0..1 (or clamp(v, min, max)) · lerp(a, b, t)
        W                 the design rect, the projected area: W.x, W.y, W.w, W.h
        UV.util.ease      easing curves: UV.util.ease.cubicOut(t) etc.
        UV.util.mulberry32(seed)  a repeatable random number generator
+
+       Each shape has: name, color ('#rrggbb'), closed, pts [{x, y}] in 0..1 of
+       the design rect, and media (its picture / movie fill, if any).
+
+     Pictures and movies (loaded under "Pictures & movies" in MAP):
+       The "Pictures & movies" layer paints every shape's fill. In your own effect:
+       drawMedia(ctx, s)               paint the shape's own fill inside it
+       drawMedia(ctx, s, 'clip.mp4', 'stretch')
+                                       paint a loaded file (by name) inside the
+                                       shape; fit is 'cover' (default), 'contain',
+                                       'stretch', 'span' (the whole projection) or
+                                       'perspective' (corners pinned to the shape's)
+       media(s) / media('clip.mp4')    the <img> or <video> itself, or null, for
+                                       ctx.drawImage(...) and friends
      ===================================================================== -->
+
+<!-- ---- the effect registry (leave this first) ---- -->
+<script>
+window.UV = window.UV || {};
+UV.effects = UV.effects || {};
+UV.effect = function (id, def) {
+  if (UV.effects[id]) console.warn('Ultraviolet: effect "' + id + '" was registered twice; the later one wins.');
+  UV.effects[id] = Object.assign({ id: id, label: id, params: {} }, def);
+  if (UV.bus) UV.bus.emit('effects:changed');
+};
+</script>
+
+<!-- ---- draw(): the quickest way in -------------------------------------
+     The "draw() in this file" layer calls this function. Fine for a first
+     sketch; move it into its own UV.effect once it grows. -->
 <script>
 function draw(ctx, t, shapes) {
   /* Placeholder: every shape's outline in its own colour, gently breathing.
@@ -270,17 +441,292 @@ function draw(ctx, t, shapes) {
     ctx.lineWidth = u(3);
     ctx.stroke();
   });
-
-  /* Ideas to try:
-     - fill each closed shape, fading in one after another:  ctx.globalAlpha = clamp(t - i)
-     - a dot running round each outline:                     along(s, (t * 0.2) % 1)
-     - stripes sliding through a shape:                      clipTo(ctx, s) then draw lines
-     - ctx.globalCompositeOperation = 'lighter' to make overlaps add up and glow  */
 }
 </script>
 
+<!-- ---- example effect: outline -------------------------------------- -->
+<script>
+UV.effect('outline', {
+  label: 'Glowing outline',
+  params: {
+    width: { value: 4, min: 0.5, max: 40, label: 'width (u)' },
+    glow: { value: 18, min: 0, max: 80, label: 'glow (u)' },
+    pulse: { value: 1.5, min: 0, max: 10, label: 'pulse speed' },
+    color: { value: '#4df3ff' },
+    shapeColor: { value: true, label: 'use shape colour' },
+  },
+  draw(ctx, t, shapes, p) {
+    shapes.forEach((s, i) => {
+      const c = p.shapeColor ? s.color : p.color;
+      pathOf(ctx, s);
+      ctx.strokeStyle = rgba(c, 0.6 + 0.4 * Math.sin(t * p.pulse + i));
+      ctx.lineWidth = u(p.width);
+      ctx.shadowColor = c;
+      ctx.shadowBlur = u(p.glow);
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    });
+  },
+});
+</script>
+
+<!-- ---- example effect: chase ---------------------------------------- -->
+<script>
+UV.effect('chase', {
+  label: 'Chasing dots',
+  params: {
+    count: { value: 3, min: 1, max: 24, step: 1 },
+    speed: { value: 0.15, min: -1, max: 1, label: 'speed (laps/s)' },
+    size: { value: 10, min: 1, max: 60, label: 'size (u)' },
+    tail: { value: 12, min: 0, max: 60, step: 1, label: 'tail length' },
+    color: { value: '#ffffff' },
+    shapeColor: { value: false, label: 'use shape colour' },
+  },
+  draw(ctx, t, shapes, p) {
+    ctx.globalCompositeOperation = 'lighter';
+    shapes.forEach((s) => {
+      ctx.fillStyle = p.shapeColor ? s.color : p.color;
+      for (let k = 0; k < p.count; k++) {
+        for (let j = 0; j <= p.tail; j++) {
+          const pt = along(s, t * p.speed + k / p.count - j * 0.004 * Math.sign(p.speed || 1));
+          if (!pt) continue;
+          ctx.globalAlpha = 1 - j / (p.tail + 1);
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, u(p.size) * (1 - j / (p.tail + 2)) / 2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    });
+  },
+});
+</script>
+
+<!-- ---- example effect: stripes -------------------------------------- -->
+<script>
+UV.effect('stripes', {
+  label: 'Sliding stripes',
+  params: {
+    spacing: { value: 60, min: 8, max: 400, label: 'spacing (u)' },
+    width: { value: 0.35, min: 0.02, max: 1, label: 'stripe width' },
+    angle: { value: 45, min: 0, max: 180, step: 1, label: 'angle (°)' },
+    speed: { value: 80, min: -600, max: 600, label: 'speed (u/s)' },
+    color: { value: '#ff2bd6' },
+    shapeColor: { value: false, label: 'use shape colour' },
+  },
+  draw(ctx, t, shapes, p) {
+    const gap = u(p.spacing), a = (p.angle * Math.PI) / 180;
+    shapes.forEach((s) => {
+      if (!s.closed) return;
+      const b = bounds(s), c = center(s), r = Math.hypot(b.w, b.h) / 2 + gap;
+      ctx.save();
+      clipTo(ctx, s);
+      ctx.translate(c.x, c.y);
+      ctx.rotate(a);
+      ctx.fillStyle = p.shapeColor ? s.color : p.color;
+      const off = ((u(p.speed) * t) % gap + gap) % gap;
+      for (let x = -r - gap + off; x < r; x += gap) ctx.fillRect(x, -r, gap * p.width, 2 * r);
+      ctx.restore();
+    });
+  },
+});
+</script>
+
+<!-- ---- example effect: sequence ------------------------------------- -->
+<script>
+UV.effect('sequence', {
+  label: 'Fill one after another',
+  params: {
+    step: { value: 0.6, min: 0.05, max: 5, label: 'seconds per shape' },
+    fade: { value: 0.4, min: 0, max: 3, label: 'fade (s)' },
+    loop: { value: true },
+    color: { value: '#ffffff' },
+    shapeColor: { value: true, label: 'use shape colour' },
+  },
+  draw(ctx, t, shapes, p) {
+    const n = shapes.length;
+    if (!n) return;
+    const cycle = n * p.step + p.fade + 1;
+    const time = p.loop ? t % cycle : t;
+    shapes.forEach((s, i) => {
+      if (!s.closed) return;
+      ctx.globalAlpha = clamp((time - i * p.step) / (p.fade || 0.001));
+      pathOf(ctx, s);
+      ctx.fillStyle = p.shapeColor ? s.color : p.color;
+      ctx.fill();
+    });
+  },
+});
+</script>
+
+<!-- ---- example effect: breathe -------------------------------------- -->
+<script>
+UV.effect('breathe', {
+  label: 'Breathing fill',
+  params: {
+    speed: { value: 0.5, min: 0, max: 5, label: 'breaths per second' },
+    low: { value: 0.05, min: 0, max: 1, label: 'dimmest' },
+    high: { value: 0.8, min: 0, max: 1, label: 'brightest' },
+    stagger: { value: 0.3, min: 0, max: 2, label: 'stagger (s)' },
+    color: { value: '#4df3ff' },
+    shapeColor: { value: true, label: 'use shape colour' },
+  },
+  draw(ctx, t, shapes, p) {
+    shapes.forEach((s, i) => {
+      if (!s.closed) return;
+      const k = 0.5 - 0.5 * Math.cos((t - i * p.stagger) * p.speed * Math.PI * 2);
+      ctx.globalAlpha = lerp(p.low, p.high, k);
+      pathOf(ctx, s);
+      ctx.fillStyle = p.shapeColor ? s.color : p.color;
+      ctx.fill();
+    });
+  },
+});
+</script>
+
+<!-- ---- example effect: sparkle (uses state) ------------------------- -->
+<script>
+UV.effect('sparkle', {
+  label: 'Sparkles inside',
+  params: {
+    density: { value: 40, min: 1, max: 400, step: 1, label: 'sparkles per shape' },
+    size: { value: 6, min: 1, max: 40, label: 'size (u)' },
+    rate: { value: 1.5, min: 0.1, max: 10, label: 'twinkles per second' },
+    color: { value: '#ffffff' },
+  },
+  draw(ctx, t, shapes, p, state) {
+    /* points are placed once per shape (and again if it is edited), so the
+       sparkles don't jump around every frame */
+    state.pts = state.pts || {};
+    ctx.fillStyle = p.color;
+    ctx.globalCompositeOperation = 'lighter';
+    shapes.forEach((s) => {
+      if (!s.closed) return;
+      const key = s.id + ':' + s.rev + ':' + p.density;
+      if (!state.pts[s.id] || state.pts[s.id].key !== key) {
+        const rnd = UV.util.mulberry32(s.id.length * 977 + p.density);
+        const b = UV.util.bbox(s.pts), list = [];
+        for (let tries = 0; list.length < p.density && tries < p.density * 20; tries++) {
+          const q = { x: b.x0 + rnd() * b.w, y: b.y0 + rnd() * b.h };
+          if (UV.util.pointInPoly(q, s.pts)) list.push({ x: q.x, y: q.y, ph: rnd() * 10 });
+        }
+        state.pts[s.id] = { key, list };
+      }
+      state.pts[s.id].list.forEach((q) => {
+        const k = Math.max(0, Math.sin((t * p.rate + q.ph) * Math.PI));
+        const c = UV.stage.n2s(q), r = u(p.size) * k * k;
+        if (r < 0.3) return;
+        ctx.globalAlpha = k;
+        ctx.beginPath();
+        ctx.moveTo(c.x - r, c.y); ctx.lineTo(c.x, c.y - r * 0.25); ctx.lineTo(c.x + r, c.y);
+        ctx.lineTo(c.x, c.y + r * 0.25); ctx.closePath();
+        ctx.moveTo(c.x, c.y - r); ctx.lineTo(c.x + r * 0.25, c.y); ctx.lineTo(c.x, c.y + r);
+        ctx.lineTo(c.x - r * 0.25, c.y); ctx.closePath();
+        ctx.fill();
+      });
+    });
+  },
+});
+</script>
+
+<!-- ---- example effect: radar ---------------------------------------- -->
+<script>
+UV.effect('radar', {
+  label: 'Radar sweep',
+  params: {
+    speed: { value: 0.25, min: -2, max: 2, label: 'turns per second' },
+    width: { value: 70, min: 5, max: 360, step: 1, label: 'beam width (°)' },
+    color: { value: '#7dff6a' },
+    shapeColor: { value: false, label: 'use shape colour' },
+  },
+  draw(ctx, t, shapes, p) {
+    shapes.forEach((s) => {
+      if (!s.closed) return;
+      const c = center(s), b = bounds(s), r = Math.hypot(b.w, b.h);
+      const a = t * p.speed * Math.PI * 2, w = (p.width * Math.PI) / 180;
+      const col = p.shapeColor ? s.color : p.color;
+      ctx.save();
+      clipTo(ctx, s);
+      /* the beam fades from its leading edge back over its width */
+      const steps = 24;
+      for (let k = 0; k < steps; k++) {
+        ctx.globalAlpha = (1 - k / steps) * 0.9;
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(c.x, c.y);
+        ctx.arc(c.x, c.y, r, a - (w * (k + 1)) / steps * Math.sign(p.speed || 1), a - (w * k) / steps * Math.sign(p.speed || 1), p.speed < 0);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+    });
+  },
+});
+</script>
+
+<!-- ---- example effect: hue cycle ------------------------------------ -->
+<script>
+UV.effect('hue', {
+  label: 'Colour cycle',
+  params: {
+    speed: { value: 40, min: -360, max: 360, label: 'degrees per second' },
+    spread: { value: 60, min: 0, max: 360, label: 'shift between shapes (°)' },
+    saturation: { value: 100, min: 0, max: 100, step: 1 },
+    lightness: { value: 55, min: 0, max: 100, step: 1 },
+    mode: { value: 'fill', options: ['fill', 'outline'] },
+    width: { value: 4, min: 0.5, max: 40, label: 'outline width (u)' },
+  },
+  draw(ctx, t, shapes, p) {
+    shapes.forEach((s, i) => {
+      const col = 'hsl(' + (t * p.speed + i * p.spread) + ',' + p.saturation + '%,' + p.lightness + '%)';
+      pathOf(ctx, s);
+      if (p.mode === 'fill' && s.closed) { ctx.fillStyle = col; ctx.fill(); }
+      else { ctx.strokeStyle = col; ctx.lineWidth = u(p.width); ctx.stroke(); }
+    });
+  },
+});
+</script>
+
+<!-- ---- layer stack presets ----------------------------------------------
+     Ready-made stacks for the "presets" menu in PLAY. Each entry is a list of
+     layers, bottom first: { effect, opacity?, blend?, params? }. Add your own;
+     they may only use effects that are registered (missing ones are skipped). -->
+<script>
+UV.presets = (UV.presets || []).concat([
+  { name: 'Fills + outlines', layers: [{ effect: 'media' }, { effect: 'outline' }] },
+  { name: 'Neon', layers: [
+    { effect: 'hue', params: { mode: 'outline', width: 3, speed: 30 } },
+    { effect: 'outline', blend: 'lighter', opacity: 0.7, params: { width: 2, glow: 40, shapeColor: true } },
+    { effect: 'chase', blend: 'lighter', params: { count: 2, speed: 0.12, size: 14, tail: 20 } },
+  ] },
+  { name: 'Stage wash', layers: [
+    { effect: 'breathe', params: { speed: 0.2, low: 0.15, high: 0.6, stagger: 0.8 } },
+    { effect: 'stripes', blend: 'screen', opacity: 0.35, params: { spacing: 120, width: 0.2, speed: 40, color: '#ffffff' } },
+  ] },
+  { name: 'Movie + sparkle', layers: [
+    { effect: 'media' },
+    { effect: 'sparkle', blend: 'lighter', params: { density: 60 } },
+    { effect: 'outline', opacity: 0.5, params: { width: 1.5, glow: 10 } },
+  ] },
+  { name: 'Sequence reveal', layers: [
+    { effect: 'sequence', params: { step: 0.4, fade: 0.3 } },
+    { effect: 'radar', blend: 'screen', opacity: 0.5 },
+  ] },
+]);
+</script>
+
+<!-- ---- effects in their own files: one line each ----------------------
+     (onerror keeps the page working if a file is missing, e.g. when only
+     starter.html was downloaded) -->
+<script src="effects/scanlines.js" onerror="this.remove()"></script>
+<!-- <script src="effects/your-effect.js" onerror="this.remove()"></script> -->
+
 <!-- =====================================================================
-     The mapping engine below. You should not need to change anything here.
+     ENGINE
+     =====================================================================
+     The mapping engine. You should not need to change anything here: add
+     effects in the EFFECTS section above instead. Modules, in order:
+       bus · util · stage (screen pinning, span mode) · screens · project ·
+       media · setups · layers · editor (MAP) · draw() helpers · panel · boot
      ===================================================================== -->
 <script>
 window.UV = window.UV || {};
@@ -455,38 +901,54 @@ window.UV = window.UV || {};
     rect: { x: 0, y: 0, w: 0, h: 0 },
     vw: 0,
     vh: 0,
-    origin: { x: 0, y: 0 }, /* top-left of the viewport, in screen px */
+    origin: { x: 0, y: 0 }, /* top-left of the viewport, in desktop px */
+    /* span mode (one window stretched over two screens): */
+    out: null,          /* the output screen {left, top, width, height} in desktop px, or null = the window's own screen */
+    outLabel: '',
+    outScreen: null,    /* its ScreenDetailed, when the browser gave us one (for fullscreen on it) */
+    outView: { x: 0, y: 0, w: 0, h: 0 }, /* the target screen in viewport px */
+    ctl: null,          /* the part of the window on the control screen, in viewport px, or null */
+    pv: null,           /* the preview box inside ctl, or null */
+    previewOn: true,
+    panelOpen: true,
+    panelW: 320,
+    pickScale: 1,       /* projector px per screen px of the last picked point (preview is smaller) */
   });
 
-  /* the viewport's position on the screen. The window frame and tab strip are
+  /* the viewport's position on the desktop. The window frame and tab strip are
      estimated from outer vs inner size, then corrected exactly by the first
-     pointer event (screenX - clientX), which is kept until the frame changes. */
+     pointer event (screenX - clientX), which is kept until the frame changes.
+     Desktop px: the coordinate space all screens share (window.screenX). */
   let fix = null; /* { sig, dx, dy } */
   const screenLeft = () => (screen.left !== undefined ? screen.left : screen.availLeft || 0);
   const screenTop = () => (screen.top !== undefined ? screen.top : screen.availTop || 0);
   const frameSig = () => [window.outerWidth - window.innerWidth, window.outerHeight - window.innerHeight].join(',');
+  /* fullscreen API, or F11 (a frameless window the size of the screen) */
   function isFull() {
     return !!document.fullscreenElement ||
-      (window.innerWidth >= screen.width && window.innerHeight >= screen.height);
+      (window.innerWidth >= screen.width && window.innerHeight >= screen.height &&
+        window.outerWidth - window.innerWidth < 2 && window.outerHeight - window.innerHeight < 2);
   }
   function estimate() {
     const side = Math.max(0, (window.outerWidth - window.innerWidth) / 2);
     return {
-      x: window.screenX - screenLeft() + side,
-      y: window.screenY - screenTop() + Math.max(0, window.outerHeight - window.innerHeight - side),
+      x: window.screenX + side,
+      y: window.screenY + Math.max(0, window.outerHeight - window.innerHeight - side),
     };
   }
   function locate() {
-    if (isFull()) return { x: 0, y: 0 };
+    if (isFull()) return { x: screenLeft(), y: screenTop() };
     const e = estimate();
     if (fix && fix.sig === frameSig()) return { x: e.x + fix.dx, y: e.y + fix.dy };
     return e;
   }
   function calibrate(ev) {
-    if (isFull()) return;
+    if (isFull() || !ev.isTrusted) return;
     const e = estimate();
-    const x = ev.screenX - ev.clientX - screenLeft(), y = ev.screenY - ev.clientY - screenTop();
-    const dx = x - e.x, dy = y - e.y;
+    const dx = ev.screenX - ev.clientX - e.x, dy = ev.screenY - ev.clientY - e.y;
+    /* the correction is only ever the frame / tab strip; anything bigger is a
+       bogus event (remote desktop, automation) and would throw the map off */
+    if (Math.abs(dx) > 150 || Math.abs(dy) > 150) return;
     if (fix && fix.sig === frameSig() && Math.abs(fix.dx - dx) < 0.5 && Math.abs(fix.dy - dy) < 0.5) return;
     fix = { sig: frameSig(), dx, dy };
     S.layout();
@@ -506,17 +968,31 @@ window.UV = window.UV || {};
   let lastKey = '';
   S.track = function () {
     const k = [window.screenX, window.screenY, window.innerWidth, window.innerHeight,
-      window.outerWidth, window.outerHeight, screen.width, screen.height].join(',');
+      window.outerWidth, window.outerHeight, screen.width, screen.height, screenLeft(), screenTop()].join(',');
     if (k !== lastKey) { lastKey = k; S.layout(); }
   };
 
+  /* the screen the map is projected on: the chosen output screen in span
+     mode, otherwise whichever screen the window is on */
+  S.target = function () {
+    return S.out || { left: screenLeft(), top: screenTop(), width: screen.width, height: screen.height };
+  };
+
   S.screenAspect = function () {
-    return (window.screen && window.screen.width / window.screen.height) || 16 / 9;
+    const t = S.target();
+    return (t.width && t.height && t.width / t.height) || 16 / 9;
   };
 
   S.setAspect = function (a) {
     S.aspect = a || S.screenAspect();
     S.resize();
+  };
+
+  S.setOutput = function (out, label, scr) {
+    S.out = out || null;
+    S.outLabel = label || '';
+    S.outScreen = scr || null;
+    S.layout();
   };
 
   S.resize = function () {
@@ -532,23 +1008,60 @@ window.UV = window.UV || {};
     S.layout();
   };
 
-  /* the design rect: letterboxed into the whole screen, then shifted so it
-     stays put on the screen wherever the viewport happens to be */
+  /* the design rect: letterboxed into the whole target screen, then shifted so
+     it stays put on that screen wherever the viewport happens to be */
   S.layout = function () {
     if (!S.canvas) return;
-    const w = screen.width, h = screen.height;
+    const T = S.target(), w = T.width, h = T.height;
     let rw, rh;
     if (w / h > S.aspect) { rh = h; rw = h * S.aspect; }
     else { rw = w; rh = w / S.aspect; }
     S.origin = locate();
-    S.rect = { x: (w - rw) / 2 - S.origin.x, y: (h - rh) / 2 - S.origin.y, w: rw, h: rh };
+    const ox = T.left - S.origin.x, oy = T.top - S.origin.y;
+    S.rect = { x: ox + (w - rw) / 2, y: oy + (h - rh) / 2, w: rw, h: rh };
+    S.outView = { x: ox, y: oy, w: w, h: h };
+    S.ctl = S.out ? controlArea() : null;
+    S.pv = S.ctl && S.previewOn ? previewBox(S.ctl) : null;
     UV.bus.emit('resize');
   };
+
+  /* the biggest strip of the window that is off the output screen: that is
+     the control screen's share of a window stretched over both */
+  function controlArea() {
+    const o = S.outView, vw = S.vw, vh = S.vh, c = UV.util.clamp;
+    const l = c(o.x, 0, vw), r = c(o.x + o.w, 0, vw), t = c(o.y, 0, vh), b = c(o.y + o.h, 0, vh);
+    if (r - l < 1 || b - t < 1) return { x: 0, y: 0, w: vw, h: vh }; /* the output screen isn't in the window at all */
+    const best = [
+      { x: 0, y: 0, w: l, h: vh }, { x: r, y: 0, w: vw - r, h: vh },
+      { x: 0, y: 0, w: vw, h: t }, { x: 0, y: b, w: vw, h: vh - b },
+    ].sort((p, q) => q.w * q.h - p.w * p.h)[0];
+    return best.w >= 200 && best.h >= 200 ? best : null;
+  }
+
+  function previewBox(c) {
+    const pl = S.panelOpen ? Math.min(S.panelW, c.w) : 0;
+    const ax = c.x + pl + 24, aw = c.w - pl - 48, ay = c.y + 44, ah = c.h - 100;
+    if (aw < 120 || ah < 80) return null;
+    const a = S.rect.w / S.rect.h;
+    let pw = aw, ph = aw / a;
+    if (ph > ah) { ph = ah; pw = ah * a; }
+    return { x: ax + (aw - pw) / 2, y: ay + (ah - ph) / 2, w: pw, h: ph };
+  }
 
   /* normalized -> css pixels */
   S.n2s = function (p) { return { x: S.rect.x + p.x * S.rect.w, y: S.rect.y + p.y * S.rect.h }; };
   /* css pixels -> normalized */
   S.s2n = function (p) { return { x: (p.x - S.rect.x) / S.rect.w, y: (p.y - S.rect.y) / S.rect.h }; };
+  /* a pointer position -> normalized, from the projector or from the preview */
+  S.pick = function (p) {
+    const v = S.pv;
+    if (v && p.x >= v.x && p.x <= v.x + v.w && p.y >= v.y && p.y <= v.y + v.h) {
+      S.pickScale = S.rect.h / v.h;
+      return { x: (p.x - v.x) / v.w, y: (p.y - v.y) / v.h };
+    }
+    S.pickScale = 1;
+    return S.s2n(p);
+  };
   /* design units: 1000 u == full design height, so sizes are resolution independent */
   S.u = function (v) { return (v * S.rect.h) / 1000; };
 
@@ -561,10 +1074,155 @@ window.UV = window.UV || {};
     ctx.fillRect(0, 0, S.vw, S.vh);
   };
 
+  /* span mode, after everything is drawn: blank the control screen's share of
+     the window and copy the projected area into the preview box there */
+  S.finish = function () {
+    const c = S.ctl;
+    if (!c) return;
+    const ctx = S.ctx, d = S.dpr, r = S.rect, p = S.pv;
+    ctx.setTransform(d, 0, 0, d, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = '#05060a';
+    ctx.fillRect(c.x, c.y, c.w, c.h);
+    if (!p) return;
+    const x0 = Math.max(0, r.x), y0 = Math.max(0, r.y);
+    const x1 = Math.min(S.vw, r.x + r.w), y1 = Math.min(S.vh, r.y + r.h);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+    if (x1 > x0 && y1 > y0) {
+      const k = p.w / r.w;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(S.canvas,
+        x0 * d, y0 * d, (x1 - x0) * d, (y1 - y0) * d,
+        (p.x + (x0 - r.x) * k) * d, (p.y + (y0 - r.y) * k) * d, (x1 - x0) * k * d, (y1 - y0) * k * d);
+      ctx.setTransform(d, 0, 0, d, 0, 0);
+    }
+    ctx.strokeStyle = 'rgba(77,243,255,0.5)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(p.x - 0.5, p.y - 0.5, p.w + 1, p.h + 1);
+    ctx.fillStyle = '#7b869c';
+    ctx.font = '11px ui-monospace, Consolas, monospace';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('OUTPUT PREVIEW · ' + S.outLabel + ' · ' + S.out.width + '×' + S.out.height +
+      (UV.app.mode === 'map' ? ' · you can edit here' : ''), p.x, p.y - 8);
+  };
+
+  /* fullscreen can't cover two screens, so in span mode it goes to the output
+     screen (needs screen access; otherwise the browser picks the window's screen) */
   S.requestFullscreen = function () {
     const el = document.documentElement;
     if (document.fullscreenElement) document.exitFullscreen();
-    else if (el.requestFullscreen) el.requestFullscreen();
+    else if (el.requestFullscreen) {
+      const opts = S.out && S.outScreen ? { screen: S.outScreen } : undefined;
+      el.requestFullscreen(opts).catch(() => el.requestFullscreen());
+    }
+  };
+})(window.UV);
+
+/* ---- screens: find the projector for span mode -----------------------------
+   Span mode: stretch ONE browser window over the laptop screen and the
+   projector (Windows: Win+P > Extend). The map is pinned to the projector, the
+   panel and a live preview sit on the other screen. One window means one
+   canvas and one frame loop, which the browser never throttles the way it does
+   a second, covered-up window. Screen sizes and positions come from the
+   Window Management API (Chrome / Edge), after the user allows it once. */
+(function (UV) {
+  const KEY = 'uv.starter.output';
+  const O = (UV.screens = {
+    span: false,      /* the setting */
+    preview: true,
+    pick: 'auto',     /* 'auto' or a screen key */
+    last: null,       /* the output screen last found, used until screens are found again */
+    details: null,    /* ScreenDetails */
+    state: 'off',     /* off | unsupported | ask | refused | single | ok | guess */
+    supported: typeof window.getScreenDetails === 'function',
+  });
+
+  try { Object.assign(O, JSON.parse(localStorage.getItem(KEY)) || {}); } catch (e) { /* defaults */ }
+  O.save = function () {
+    try { localStorage.setItem(KEY, JSON.stringify({ span: O.span, preview: O.preview, pick: O.pick, last: O.last })); } catch (e) { /* fine */ }
+  };
+
+  O.key = (s) => (s.label || 'screen') + '@' + s.left + ',' + s.top;
+  O.name = (s, i) => (s.label || 'screen ' + (i + 1)) + (s.isPrimary ? ' (main)' : '');
+  O.screens = () => (O.details ? O.details.screens : []);
+
+  /* ask: true from a click, which may show the browser's permission prompt */
+  O.detect = async function (ask) {
+    if (!O.supported) { O.apply(); return; }
+    if (!O.details) {
+      if (!ask) {
+        let st = 'prompt';
+        for (const name of ['window-management', 'window-placement']) { /* new name, then the older one */
+          try { st = (await navigator.permissions.query({ name: name })).state; break; } catch (e) { /* try the next */ }
+        }
+        if (st !== 'granted') { O.apply(); return; }
+      }
+      try {
+        O.details = await window.getScreenDetails();
+        O.details.addEventListener('screenschange', () => O.apply());
+      } catch (e) {
+        O.refused = true;
+      }
+    }
+    O.apply();
+  };
+
+  /* work out the output screen and hand it to the stage */
+  O.apply = function () {
+    let out = null, label = '', scr = null;
+    const list = O.screens();
+    if (!O.span) O.state = 'off';
+    else if (O.details && list.length < 2) O.state = 'single';
+    else if (O.details) {
+      scr = list.find((s) => O.key(s) === O.pick) ||
+        /* auto: the projector is rarely the main screen */
+        list.find((s) => !s.isPrimary) || list[1];
+      out = { left: scr.left, top: scr.top, width: scr.width, height: scr.height };
+      label = O.name(scr, list.indexOf(scr));
+      O.last = Object.assign({ label: label }, out);
+      O.state = 'ok';
+    } else if (O.last) {
+      out = { left: O.last.left, top: O.last.top, width: O.last.width, height: O.last.height };
+      label = O.last.label;
+      O.state = 'guess';
+    } else {
+      O.state = !O.supported ? 'unsupported' : O.refused ? 'refused' : 'ask';
+    }
+    O.save();
+    UV.stage.previewOn = O.preview;
+    UV.stage.setOutput(out, label, scr);
+    UV.bus.emit('screens:changed');
+  };
+
+  /* how much of the output screen this window covers, 0..1 */
+  O.coverage = function () {
+    const S = UV.stage, o = S.outView;
+    if (!S.out) return 0;
+    const w = Math.max(0, Math.min(S.vw, o.x + o.w) - Math.max(0, o.x));
+    const h = Math.max(0, Math.min(S.vh, o.y + o.h) - Math.max(0, o.y));
+    return (w * h) / (o.w * o.h);
+  };
+
+  /* try to open a window already stretched over both screens. Browsers may
+     clamp a scripted window to one screen; dragging the window edges by hand
+     always works. */
+  O.openSpan = function () {
+    const S = UV.stage, o = S.out;
+    if (!o) return null;
+    const list = O.screens();
+    const ctl = list.find((s) => s !== S.outScreen && (s.isPrimary || list.length === 2)) || {
+      left: screen.availLeft || 0, top: screen.availTop || 0, availLeft: screen.availLeft || 0,
+      availTop: screen.availTop || 0, availWidth: screen.availWidth, availHeight: screen.availHeight,
+    };
+    const L = Math.min(ctl.availLeft, o.left), T = Math.min(ctl.availTop, o.top);
+    const R = Math.max(ctl.availLeft + ctl.availWidth, o.left + o.width);
+    const B = Math.max(ctl.availTop + ctl.availHeight, o.top + o.height);
+    const w = window.open(location.href, 'uv-span', 'popup,left=' + L + ',top=' + T + ',width=' + (R - L) + ',height=' + (B - T));
+    if (!w) return null;
+    try { w.moveTo(L, T); w.resizeTo(R - L, B - T); } catch (e) { /* clamped, fine */ }
+    return w;
   };
 })(window.UV);
 
@@ -580,6 +1238,7 @@ window.UV = window.UV || {};
     name: 'untitled',
     aspect: 16 / 9,
     shapes: [],
+    layers: null, /* the PLAY stack, bottom first; see UV.layers */
     ref: { src: null, opacity: 0.45, visible: true, fit: 'cover' },
     sel: new Set(),
     _undo: [],
@@ -654,6 +1313,7 @@ window.UV = window.UV || {};
       name: P.name,
       aspect: P.aspect,
       shapes: P.shapes,
+      layers: P.layers,
       ref: withRef ? P.ref : { src: null, opacity: P.ref.opacity, visible: P.ref.visible, fit: P.ref.fit },
     };
   };
@@ -673,6 +1333,8 @@ window.UV = window.UV || {};
     P.name = data.name || 'untitled';
     P.aspect = data.aspect || UV.stage.screenAspect();
     P.shapes = (data.shapes || []).map((s) => Object.assign({ rev: 1, visible: true, locked: false }, s));
+    P.layers = Array.isArray(data.layers) ? data.layers : UV.layers.defaults();
+    UV.layers.reset();
     P.ref = Object.assign({ src: null, opacity: 0.45, visible: true, fit: 'cover' }, data.ref || {});
     P.sel = new Set();
     P.setRef(P.ref.src);
@@ -707,6 +1369,492 @@ window.UV = window.UV || {};
   };
 })(window.UV);
 
+/* ---- media: pictures and movies to fill shapes with ------------------------
+   Files live in IndexedDB (they are far too big for localStorage), so they
+   survive a reload. A shape points at one with
+     shape.media = { id, name, fit: 'cover'|'contain'|'stretch'|'span', opacity }
+     (+ warp: true to pin its corners to the shape's, turn: 0..3 to rotate them)
+   The name is kept so an imported map finds the file again once it is reloaded. */
+(function (UV) {
+  const U = UV.util;
+  const M = (UV.media = { items: [] }); /* { id, name, kind, url, el, ready, used } */
+  const DB = 'uv.starter.media', STORE = 'files';
+
+  function store(mode, fn) {
+    return new Promise((res, rej) => {
+      const open = indexedDB.open(DB, 1);
+      open.onupgradeneeded = () => open.result.createObjectStore(STORE, { keyPath: 'id' });
+      open.onerror = () => rej(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const t = db.transaction(STORE, mode);
+        const req = fn(t.objectStore(STORE));
+        t.oncomplete = () => { db.close(); res(req.result); };
+        t.onerror = t.onabort = () => { db.close(); rej(t.error); };
+      };
+    }).catch(() => null); /* no storage (private window, quota): still works this session */
+  }
+
+  function make(rec) {
+    const kind = rec.type.startsWith('video') ? 'video' : 'image';
+    const item = { id: rec.id, name: rec.name, kind, url: URL.createObjectURL(rec.blob), el: null, ready: false, used: 0 };
+    const done = () => { item.ready = true; UV.bus.emit('media:changed'); };
+    if (kind === 'video') {
+      const v = document.createElement('video');
+      v.muted = true; v.loop = true; v.playsInline = true; v.preload = 'auto';
+      v.onloadeddata = done;
+      v.src = item.url;
+      item.el = v;
+    } else {
+      const img = new Image();
+      img.onload = done;
+      img.src = item.url;
+      item.el = img;
+    }
+    M.items.push(item);
+    return item;
+  }
+
+  M.add = function (file) {
+    if (!/^(image|video)\//.test(file.type)) return null;
+    const rec = { id: U.uid('md'), name: file.name, type: file.type, blob: file, added: Date.now() };
+    store('readwrite', (s) => s.put(rec));
+    const item = make(rec);
+    UV.bus.emit('media:changed');
+    return item;
+  };
+
+  M.remove = function (id) {
+    const it = M.byId(id);
+    if (!it) return;
+    if (it.kind === 'video') { it.el.pause(); it.el.removeAttribute('src'); it.el.load(); }
+    URL.revokeObjectURL(it.url);
+    M.items = M.items.filter((m) => m !== it);
+    store('readwrite', (s) => s.delete(id));
+    UV.bus.emit('media:changed');
+  };
+
+  M.load = function () {
+    return store('readonly', (s) => s.getAll()).then((recs) => {
+      (recs || []).sort((a, b) => (a.added || 0) - (b.added || 0)).forEach(make);
+      UV.bus.emit('media:changed');
+    });
+  };
+
+  M.byId = (id) => M.items.find((m) => m.id === id) || null;
+  M.byName = (name) => M.items.find((m) => m.name === name) || null;
+  /* the item a shape's fill points at, by id, else by file name */
+  M.of = (s) => (s && s.media ? M.byId(s.media.id) || M.byName(s.media.name) : null);
+
+  /* paint item inside shape s (clipped to it), fitted to the shape's box or,
+     for 'span', to the whole design rect; with warp, its corners pinned to the
+     shape's corners instead. Returns false if it isn't ready. */
+  M.drawIn = function (ctx, item, s, fit, warp, turn) {
+    const el = item && item.el;
+    if (!item || !item.ready || s.pts.length < 2) return false;
+    const iw = item.kind === 'video' ? el.videoWidth : el.naturalWidth;
+    const ih = item.kind === 'video' ? el.videoHeight : el.naturalHeight;
+    if (!iw || !ih) return false;
+    item.used = performance.now();
+    const S = UV.stage;
+    const pts = s.pts.map(S.n2s);
+    if (warp && pts.length > 2) {
+      ctx.save();
+      tracePath(ctx, pts);
+      ctx.clip();
+      drawWarped(ctx, el, iw, ih, corners(pts, turn || 0));
+      ctx.restore();
+      return true;
+    }
+    let box;
+    if (fit === 'span') box = S.rect;
+    else { const b = U.bbox(pts); box = { x: b.x0, y: b.y0, w: b.w, h: b.h }; }
+    if (box.w < 1 || box.h < 1) return false;
+    let w = box.w, h = box.h;
+    if (fit !== 'stretch') {
+      const ia = iw / ih;
+      if ((fit === 'contain') === (ia > box.w / box.h)) { w = box.w; h = box.w / ia; }
+      else { h = box.h; w = box.h * ia; }
+    }
+    ctx.save();
+    tracePath(ctx, pts);
+    ctx.clip();
+    ctx.drawImage(el, box.x + (box.w - w) / 2, box.y + (box.h - h) / 2, w, h);
+    ctx.restore();
+    return true;
+  };
+
+  function tracePath(ctx, pts) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.closePath();
+  }
+
+  /* ---- perspective ----
+     The picture's corners TL, TR, BR, BL are pinned to four of the shape's
+     points: a 4-point shape uses its own points (in clockwise order, starting
+     nearest the top-left), any other shape its four outermost points. `turn`
+     rotates that assignment a quarter at a time. */
+  function corners(pts, turn) {
+    let q;
+    if (pts.length === 4) {
+      q = pts.slice();
+      let area = 0;
+      for (let i = 0; i < 4; i++) { const a = q[i], b = q[(i + 1) % 4]; area += a.x * b.y - b.x * a.y; }
+      if (area < 0) q.reverse(); /* make it clockwise on screen (y points down) */
+      let k = 0;
+      q.forEach((p, i) => { if (p.x + p.y < q[k].x + q[k].y) k = i; });
+      q = q.slice(k).concat(q.slice(0, k));
+    } else {
+      const pick = (f) => pts.reduce((b, p) => (f(p) > f(b) ? p : b));
+      q = [pick((p) => -p.x - p.y), pick((p) => p.x - p.y), pick((p) => p.x + p.y), pick((p) => p.y - p.x)];
+    }
+    for (let i = 0; i < turn; i++) q.unshift(q.pop());
+    return q;
+  }
+
+  /* the projective map of the unit square onto quad q (Heckbert) */
+  function homography(q) {
+    const [p0, p1, p2, p3] = q;
+    const sx = p0.x - p1.x + p2.x - p3.x, sy = p0.y - p1.y + p2.y - p3.y;
+    let g = 0, h = 0;
+    if (Math.abs(sx) > 1e-9 || Math.abs(sy) > 1e-9) {
+      const dx1 = p1.x - p2.x, dx2 = p3.x - p2.x, dy1 = p1.y - p2.y, dy2 = p3.y - p2.y;
+      const den = dx1 * dy2 - dx2 * dy1 || 1e-9;
+      g = (sx * dy2 - dx2 * sy) / den;
+      h = (dx1 * sy - sx * dy1) / den;
+    }
+    const a = p1.x - p0.x + g * p1.x, b = p3.x - p0.x + h * p3.x;
+    const d = p1.y - p0.y + g * p1.y, e = p3.y - p0.y + h * p3.y;
+    return (u, v) => {
+      const w = g * u + h * v + 1;
+      return { x: (a * u + b * v + p0.x) / w, y: (d * u + e * v + p0.y) / w };
+    };
+  }
+
+  /* canvas 2D only does affine transforms, so the picture is cut into a grid
+     of triangles, each placed with its own affine transform: close enough to
+     a true perspective that the seams don't show */
+  const GRID = 14;
+  let wbuf = null; /* scratch canvas the triangles are assembled in */
+  function drawWarped(ctx, el, iw, ih, q) {
+    const H = homography(q);
+    const n = GRID, dst = [];
+    for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) dst.push(H(i / n, j / n));
+    const at = (i, j) => dst[j * (n + 1) + i];
+    const src = (i, j) => ({ x: (i / n) * iw, y: (j / n) * ih });
+
+    /* seams: neighbouring triangles share their edges exactly, and their
+       anti-aliased edge pixels are ADDED ('lighter') in a scratch canvas, so
+       the two partial coverages sum to exactly one: no hairline gaps, and no
+       doubled-up overlaps for see-through pictures. Then it's drawn once. */
+    const S = UV.stage, d = S.dpr, b = U.bbox(dst);
+    const x0 = Math.max(Math.floor(b.x0) - 2, 0), y0 = Math.max(Math.floor(b.y0) - 2, 0);
+    const x1 = Math.min(Math.ceil(b.x1) + 2, S.vw), y1 = Math.min(Math.ceil(b.y1) + 2, S.vh);
+    const bw = Math.ceil((x1 - x0) * d), bh = Math.ceil((y1 - y0) * d);
+    if (bw < 1 || bh < 1) return;
+    if (!wbuf) { const c = document.createElement('canvas'); wbuf = { canvas: c, ctx: c.getContext('2d') }; }
+    if (wbuf.canvas.width < bw || wbuf.canvas.height < bh) {
+      wbuf.canvas.width = Math.max(wbuf.canvas.width, bw);
+      wbuf.canvas.height = Math.max(wbuf.canvas.height, bh);
+    }
+    const w = wbuf.ctx;
+    w.setTransform(1, 0, 0, 1, 0, 0);
+    w.globalCompositeOperation = 'source-over';
+    w.clearRect(0, 0, bw, bh);
+    w.setTransform(d, 0, 0, d, -x0 * d, -y0 * d);
+    w.globalCompositeOperation = 'lighter';
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        tri(w, el, iw, ih, src(i, j), src(i + 1, j), src(i, j + 1), at(i, j), at(i + 1, j), at(i, j + 1));
+        tri(w, el, iw, ih, src(i + 1, j + 1), src(i, j + 1), src(i + 1, j), at(i + 1, j + 1), at(i, j + 1), at(i + 1, j));
+      }
+    }
+    w.globalCompositeOperation = 'source-over';
+    ctx.drawImage(wbuf.canvas, 0, 0, bw, bh, x0, y0, bw / d, bh / d);
+  }
+
+  function tri(ctx, el, iw, ih, s0, s1, s2, d0, d1, d2) {
+    const ux = s1.x - s0.x, uy = s1.y - s0.y, vx = s2.x - s0.x, vy = s2.y - s0.y;
+    const det = ux * vy - vx * uy;
+    if (!det) return;
+    const Ux = d1.x - d0.x, Uy = d1.y - d0.y, Vx = d2.x - d0.x, Vy = d2.y - d0.y;
+    const a = (Ux * vy - Vx * uy) / det, b = (Uy * vy - Vy * uy) / det;
+    const c = (Vx * ux - Ux * vx) / det, d = (Vy * ux - Uy * vx) / det;
+    const e = d0.x - a * s0.x - c * s0.y, f = d0.y - b * s0.x - d * s0.y;
+    const g0 = d0, g1 = d1, g2 = d2; /* clip to the exact triangle (see drawWarped) */
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(g0.x, g0.y); ctx.lineTo(g1.x, g1.y); ctx.lineTo(g2.x, g2.y);
+    ctx.closePath();
+    ctx.clip();
+    ctx.transform(a, b, c, d, e, f);
+    /* only the source cell (plus a margin) rather than the whole frame */
+    const x0 = Math.max(0, Math.min(s0.x, s1.x, s2.x) - 2), y0 = Math.max(0, Math.min(s0.y, s1.y, s2.y) - 2);
+    const x1 = Math.min(iw, Math.max(s0.x, s1.x, s2.x) + 2), y1 = Math.min(ih, Math.max(s0.y, s1.y, s2.y) + 2);
+    ctx.drawImage(el, x0, y0, x1 - x0, y1 - y0, x0, y0, x1 - x0, y1 - y0);
+    ctx.restore();
+  }
+
+  /* every visible shape's own fill, in list order */
+  M.render = function (ctx, shapes) {
+    shapes.forEach((s) => {
+      const it = M.of(s);
+      if (!it || !s.visible) return;
+      ctx.save();
+      ctx.globalAlpha = s.media.opacity === undefined ? 1 : s.media.opacity;
+      M.drawIn(ctx, it, s, s.media.fit, s.media.warp, s.media.turn);
+      ctx.restore();
+    });
+  };
+
+  /* movies follow the clock: play while time runs and something drew them in
+     the last half second, at the play speed; pause otherwise */
+  M.sync = function (playing, speed) {
+    const now = performance.now();
+    M.items.forEach((m) => {
+      if (m.kind !== 'video' || !m.ready) return;
+      const v = m.el;
+      if (playing && speed > 0 && now - m.used < 500) {
+        const r = U.clamp(speed, 0.0625, 16);
+        if (v.playbackRate !== r) v.playbackRate = r;
+        if (v.paused && !m.starting) {
+          m.starting = true;
+          v.play().catch(() => {
+            /* the browser refused sound without a click: fall back to muted */
+            if (!v.muted) { v.muted = true; UV.bus.emit('media:changed'); }
+          }).then(() => { m.starting = false; });
+        }
+      } else if (!v.paused) v.pause();
+    });
+  };
+
+  M.restart = function () {
+    M.items.forEach((m) => { if (m.kind === 'video') m.el.currentTime = 0; });
+  };
+})(window.UV);
+
+/* ---- setups: named snapshots of the whole page ------------------------------
+   A setup = the project (shapes with their fills, reference photo, aspect,
+   name) + the two-screen settings. Kept in localStorage under KEY; exported
+   as a .json file, optionally with the media files inlined as data URLs. */
+(function (UV) {
+  const KEY = 'uv.starter.setups';
+  const T = (UV.setups = {});
+
+  T.list = function () {
+    try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; }
+  };
+  function write(list) { localStorage.setItem(KEY, JSON.stringify(list)); }
+
+  T.capture = function (withRef) {
+    const O = UV.screens;
+    return {
+      kind: 'uv-setup',
+      v: 1,
+      project: UV.project.serialize(withRef !== false),
+      output: { span: O.span, preview: O.preview, pick: O.pick, last: O.last },
+    };
+  };
+
+  /* returns '' or why it could not save */
+  T.save = function (name) {
+    name = String(name || '').trim();
+    if (!name) return 'Give the setup a name first.';
+    const rest = T.list().filter((x) => x.name !== name);
+    for (const withRef of [true, false]) {
+      try {
+        write(rest.concat([{ name: name, saved: Date.now(), data: T.capture(withRef) }]));
+        UV.bus.emit('setups:changed');
+        return withRef || !UV.project.ref.src ? '' : 'Saved without the reference photo: it was too big for browser storage.';
+      } catch (e) { /* quota: retry without the reference photo */ }
+    }
+    return 'Browser storage is full: export the setup to a file instead.';
+  };
+
+  T.remove = function (name) {
+    write(T.list().filter((x) => x.name !== name));
+    UV.bus.emit('setups:changed');
+  };
+
+  /* apply a setup (or a bare map from older exports). Undo brings the
+     previous shapes back. */
+  T.apply = function (data) {
+    const isSetup = data && data.kind === 'uv-setup';
+    UV.project.snapshot();
+    UV.project.load(isSetup ? data.project : data);
+    if (isSetup && data.output) {
+      const O = UV.screens;
+      ['span', 'preview', 'pick', 'last'].forEach((k) => { if (data.output[k] !== undefined) O[k] = data.output[k]; });
+      O.apply();
+    }
+  };
+
+  T.load = function (name) {
+    const x = T.list().find((y) => y.name === name);
+    if (x) T.apply(x.data);
+    return !!x;
+  };
+
+  /* the setup as a file; withMedia inlines the files the shapes use */
+  T.toFile = async function (data, withMedia) {
+    const out = Object.assign({}, data);
+    if (withMedia) {
+      const used = new Set();
+      data.project.shapes.forEach((sh) => { const it = UV.media.of(sh); if (it) used.add(it); });
+      out.media = [];
+      for (const it of used) {
+        const blob = await fetch(it.url).then((r) => r.blob());
+        const url = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
+        out.media.push({ name: it.name, type: blob.type, data: url });
+      }
+    }
+    return new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+  };
+
+  /* a parsed file: load its media first (skipping names already here), then apply */
+  T.fromFile = async function (data) {
+    for (const m of data.media || []) {
+      if (UV.media.byName(m.name)) continue;
+      const blob = await fetch(m.data).then((r) => r.blob());
+      UV.media.add(new File([blob], m.name, { type: m.type || blob.type }));
+    }
+    T.apply(data);
+  };
+})(window.UV);
+
+/* ---- layers: the PLAY stack -------------------------------------------------
+   UV.project.layers is a list, bottom first, of
+     { id, effect, on, opacity, blend, target: 'all' | [shape ids], params }
+   Each frame every enabled layer runs its effect's draw() with its own
+   shapes and params. A layer with opacity < 1 or a blend other than normal
+   is drawn into an offscreen buffer first and composited as a whole, so
+   overlapping strokes inside one layer don't double up and blends apply to
+   the layer, not to each stroke. Effects are registered with UV.effect()
+   (see EFFECTS at the top of the file). */
+(function (UV) {
+  const U = UV.util;
+  const L = (UV.layers = {});
+  L.BLENDS = ['source-over', 'lighter', 'screen', 'multiply', 'overlay', 'difference', 'color-dodge', 'destination-out'];
+  L.BLEND_NAMES = { 'source-over': 'normal', lighter: 'add', 'destination-out': 'erase' };
+
+  /* built-in effects: the media fills, and the draw() function in this file */
+  UV.effect('media', {
+    label: 'Pictures & movies',
+    draw(ctx, t, shapes) { UV.media.render(ctx, shapes); },
+  });
+  UV.effect('draw', {
+    label: 'draw() in this file',
+    draw(ctx, t, shapes) { if (typeof window.draw === 'function') window.draw(ctx, t, shapes); },
+  });
+
+  function defaultsOf(id) {
+    const fx = UV.effects[id], out = {};
+    if (fx) Object.keys(fx.params || {}).forEach((k) => { out[k] = fx.params[k].value; });
+    return out;
+  }
+  L.make = function (effect, opts) {
+    opts = opts || {};
+    return {
+      id: U.uid('ly'),
+      effect: effect,
+      on: true,
+      opacity: opts.opacity === undefined ? 1 : opts.opacity,
+      blend: opts.blend || 'source-over',
+      target: 'all',
+      params: Object.assign(defaultsOf(effect), opts.params || {}),
+    };
+  };
+  L.defaults = () => [L.make('media'), L.make('draw')];
+
+  /* a layer's params: the effect's defaults, overridden by what's saved */
+  L.params = (layer) => Object.assign(defaultsOf(layer.effect), layer.params || {});
+
+  L.shapesFor = function (layer, shapes) {
+    if (!Array.isArray(layer.target)) return shapes;
+    return shapes.filter((s) => layer.target.includes(s.id));
+  };
+
+  L.applyPreset = function (preset) {
+    const P = UV.project;
+    P.layers = preset.layers.filter((x) => UV.effects[x.effect]).map((x) => L.make(x.effect, x));
+    L.reset();
+    P.touch();
+  };
+
+  /* per-layer memory for effects (the `state` argument) */
+  let states = new Map();
+  L.reset = () => { states = new Map(); };
+  const stateOf = (id) => { if (!states.has(id)) states.set(id, {}); return states.get(id); };
+
+  let buf = null;
+  function buffer() {
+    const c = UV.stage.canvas;
+    if (!buf) { const b = document.createElement('canvas'); buf = { canvas: b, ctx: b.getContext('2d') }; }
+    if (buf.canvas.width !== c.width || buf.canvas.height !== c.height) { buf.canvas.width = c.width; buf.canvas.height = c.height; }
+    return buf;
+  }
+
+  /* errors: one line per failing layer, shown in the corner */
+  const errs = new Map();
+  let shown = '';
+  function report() {
+    const msg = [...errs.values()].join('\n');
+    if (msg === shown) return;
+    shown = msg;
+    const box = document.getElementById('err');
+    box.textContent = msg ? msg + '\n(open the browser console, F12, for the line number)' : '';
+    box.hidden = !msg;
+  }
+
+  /* draw the stack. skip: an effect id to leave out (MAP draws the media
+     fills itself) */
+  L.render = function (ctx, shapes, t, skip) {
+    const S = UV.stage, d = S.dpr;
+    (UV.project.layers || []).forEach((layer) => {
+      const fx = UV.effects[layer.effect];
+      if (!layer.on || !fx || typeof fx.draw !== 'function' || layer.effect === skip) return;
+      const own = L.shapesFor(layer, shapes);
+      if (Array.isArray(layer.target) && !own.length) return;
+      const alone = layer.opacity < 1 || (layer.blend && layer.blend !== 'source-over');
+      let c = ctx;
+      if (alone) {
+        const b = buffer();
+        c = b.ctx;
+        c.setTransform(1, 0, 0, 1, 0, 0);
+        c.globalAlpha = 1;
+        c.globalCompositeOperation = 'source-over';
+        c.clearRect(0, 0, b.canvas.width, b.canvas.height);
+        c.setTransform(d, 0, 0, d, 0, 0);
+      }
+      c.save();
+      try {
+        fx.draw(c, t, own, L.params(layer), stateOf(layer.id));
+        errs.delete(layer.id);
+      } catch (e) {
+        if (!errs.has(layer.id)) console.error(e);
+        errs.set(layer.id, 'layer "' + (fx.label || layer.effect) + '": ' + (e && e.message ? e.message : e));
+      }
+      c.restore();
+      if (alone) {
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = U.clamp(layer.opacity, 0, 1);
+        ctx.globalCompositeOperation = layer.blend || 'source-over';
+        ctx.drawImage(buf.canvas, 0, 0);
+        ctx.restore();
+      }
+    });
+    /* forget errors of layers that were removed or switched off */
+    for (const id of errs.keys()) {
+      const ly = (UV.project.layers || []).find((x) => x.id === id);
+      if (!ly || !ly.on) errs.delete(id);
+    }
+    report();
+  };
+})(window.UV);
+
 /* ---- the MAP editor: draw and edit shapes --------------------------------- */
 (function (UV) {
   const U = UV.util;
@@ -717,6 +1865,7 @@ window.UV = window.UV || {};
     gridSize: 25,      /* design units (1000 = full height) */
     snapGrid: false,
     snapVertex: true,
+    showMedia: true,
     pending: null,     /* pen tool in progress: {pts:[], closed} */
     drag: null,
     hover: null,
@@ -736,9 +1885,10 @@ window.UV = window.UV || {};
 
   function evtN(e) {
     const r = st().canvas.getBoundingClientRect();
-    return st().s2n({ x: e.clientX - r.left, y: e.clientY - r.top });
+    return st().pick({ x: e.clientX - r.left, y: e.clientY - r.top }); /* projector or preview */
   }
-  function pxToN(px) { return px / st().rect.h; }           /* px -> normalized y units */
+  /* screen px -> normalized y units, at the scale of where the pointer is */
+  function pxToN(px) { return (px * st().pickScale) / st().rect.h; }
   const NEAR = 8;                                           /* hit radius, px */
 
   function snap(n, exclude) {
@@ -985,6 +2135,9 @@ window.UV = window.UV || {};
   }
   E.finishPen = finishPen;
 
+  /* the shape under a mouse / drop event, or null */
+  E.shapeAt = function (e) { const h = hitShape(evtN(e)); return h ? h.shape : null; };
+
   /* ---- editing keys ---- */
   E.key = function (e) {
     const k = e.key;
@@ -1055,12 +2208,18 @@ window.UV = window.UV || {};
       ctx.restore();
     }
 
-    if (E.grid) drawGrid(ctx);
+    if (E.showMedia) UV.media.render(ctx, prj.shapes);
 
-    /* design rect border — this is exactly what fills the projector */
-    ctx.strokeStyle = 'rgba(120,150,180,0.35)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+    /* guides (grid, centre cross, border) only while the panel is out, so
+       hiding it with Tab gives a clean view of the map on the object */
+    if (UV.app.panel) {
+      if (E.grid) drawGrid(ctx);
+
+      /* design rect border — this is exactly what fills the projector */
+      ctx.strokeStyle = 'rgba(120,150,180,0.35)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+    }
 
     prj.shapes.forEach((sh) => {
       if (!sh.visible) return;
@@ -1187,6 +2346,22 @@ window.UV = window.UV || {};
     const cum = U.cum(pts);
     return U.pointAt(pts, cum, ((f % 1) + 1) % 1 * cum.total);
   };
+  /* pictures and movies: by shape (its own fill) or by file name */
+  const itemOf = (src) => (typeof src === 'string' ? UV.media.byName(src) : UV.media.of(src));
+  window.media = function (src) {
+    const it = itemOf(src);
+    if (!it || !it.ready) return null;
+    it.used = performance.now(); /* keeps a movie playing */
+    return it.el;
+  };
+  window.drawMedia = function (ctx, s, src, fit) {
+    const it = src ? itemOf(src) : UV.media.of(s);
+    const own = !src && s.media;
+    if (fit === 'perspective') return UV.media.drawIn(ctx, it, s, 'cover', true, 0);
+    if (!fit && own && s.media.warp) return UV.media.drawIn(ctx, it, s, 'cover', true, s.media.turn);
+    return UV.media.drawIn(ctx, it, s, fit || (own && s.media.fit) || 'cover');
+  };
+
   /* W: the design rect (the projected area), always the current one */
   Object.defineProperty(window, 'W', { get: () => S.rect });
 })(window.UV);
@@ -1225,6 +2400,17 @@ window.UV = window.UV || {};
     UV.bus.on('project:changed', () => { UI.refresh(); });
     UV.bus.on('editor:tool', () => { UI.refresh(); });
     UV.bus.on('editor:pending', () => { UI.refresh(); });
+    UV.bus.on('media:changed', () => { UI.refresh(); });
+    UV.bus.on('screens:changed', () => { UI.refresh(); });
+    UV.bus.on('setups:changed', buildSetupList);
+    UV.bus.on('effects:changed', () => { layerSig = ''; UI.refresh(); });
+    bindLayers();
+    bindSetups();
+    buildSetupList();
+    UV.bus.on('resize', placeForSpan);
+    bindScreens();
+    placeForSpan();
+    bindDrop();
     UI.refresh();
   };
 
@@ -1254,6 +2440,7 @@ window.UV = window.UV || {};
     $('snapVertChk').onchange = (e) => { UV.editor.snapVertex = e.target.checked; };
     $('gridSize').oninput = (e) => { UV.editor.gridSize = +e.target.value; };
 
+    $('btnMatchScreen').title = 'match the output screen (in span mode) or this screen';
     $('btnMatchScreen').onclick = () => {
       P().aspect = UV.stage.screenAspect();
       UV.stage.setAspect(P().aspect);
@@ -1277,26 +2464,26 @@ window.UV = window.UV || {};
       r.readAsDataURL(f);
     };
     $('refClear').onclick = () => { P().setRef(null); P().touch(); };
+
+    $('mediaChk').onchange = (e) => { UV.editor.showMedia = e.target.checked; };
+    $('mediaFile').onchange = (e) => {
+      [...e.target.files].forEach((f) => UV.media.add(f));
+      e.target.value = '';
+    };
     $('refOpacity').oninput = (e) => { P().ref.opacity = +e.target.value; };
     $('refVisible').onchange = (e) => { P().ref.visible = e.target.checked; };
     $('refFit').onchange = (e) => { P().ref.fit = e.target.value; };
 
-    $('btnExport').onclick = () => {
-      const blob = new Blob([JSON.stringify(P().serialize(true), null, 2)], { type: 'application/json' });
-      const a = el('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = (P().name || 'ultraviolet') + '.uvmap.json';
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    };
+    $('btnExport').onclick = () => download(UV.setups.capture(), P().name || 'ultraviolet');
     $('btnImport').onclick = () => $('importFile').click();
     $('importFile').onchange = (e) => {
       const f = e.target.files[0];
       if (!f) return;
       const r = new FileReader();
       r.onload = () => {
-        try { P().snapshot(); P().load(JSON.parse(r.result)); }
-        catch (err) { alert('Could not read that file: ' + err.message); }
+        let data;
+        try { data = JSON.parse(r.result); } catch (err) { alert('Could not read that file: ' + err.message); return; }
+        UV.setups.fromFile(data).catch((err) => alert('Could not load that file: ' + err.message));
       };
       r.readAsText(f);
       e.target.value = '';
@@ -1309,7 +2496,7 @@ window.UV = window.UV || {};
 
   function bindPlay() {
     $('btnPlay').onclick = () => { UV.app.playing = !UV.app.playing; UI.refresh(); };
-    $('btnRestart').onclick = () => { UV.app.time = 0; UV.app.playing = true; UI.refresh(); };
+    $('btnRestart').onclick = () => UV.app.restart();
     $('speedInput').oninput = (e) => {
       UV.app.speed = +e.target.value;
       $('speedVal').textContent = (+e.target.value).toFixed(2) + 'x';
@@ -1319,7 +2506,9 @@ window.UV = window.UV || {};
   /* ---- shape list ---- */
   let shapeSig = '';
   function shapeSignature() {
-    return P().shapes.map((s) => [s.id, s.name, s.color, s.visible, s.locked, s.closed, s.pts.length, P().sel.has(s.id)].join(',')).join('|');
+    const fill = (s) => (s.media ? [s.media.id, s.media.fit, s.media.warp, !!UV.media.of(s)].join(':') : '');
+    return P().shapes.map((s) => [s.id, s.name, s.color, s.visible, s.locked, s.closed, s.pts.length, P().sel.has(s.id), fill(s)].join(',')).join('|') +
+      '#' + UV.media.items.map((m) => m.id + m.ready).join(',');
   }
 
   function buildShapeList() {
@@ -1347,7 +2536,8 @@ window.UV = window.UV || {};
       name.onchange = () => { s.name = name.value; P().touch(); };
       name.onclick = (ev) => ev.stopPropagation();
 
-      const meta = el('span', 'meta', s.pts.length + (s.closed ? '△' : '―'));
+      const meta = el('span', 'meta', (s.media ? '▣ ' : '') + s.pts.length + (s.closed ? '△' : '―'));
+      if (s.media) meta.title = 'filled with ' + s.media.name + (s.media.warp ? ' (perspective)' : '');
 
       const lock = el('button', 'icon', s.locked ? '■' : '□');
       lock.title = 'lock';
@@ -1389,6 +2579,521 @@ window.UV = window.UV || {};
     bRev.onclick = () => { P().snapshot(); sel.forEach((s) => { s.pts.reverse(); P().bump(s); }); P().touch(); };
     row.appendChild(bClose); row.appendChild(bRev);
     box.appendChild(row);
+    box.appendChild(fillRow(sel));
+  }
+
+  /* point the selected shapes at media item it, keeping their fill settings */
+  function fillWith(shapes, it) {
+    shapes.forEach((s) => {
+      if (!it) { delete s.media; return; }
+      const old = s.media || {};
+      s.media = {
+        id: it.id, name: it.name,
+        fit: old.fit || 'cover',
+        opacity: old.opacity === undefined ? 1 : old.opacity,
+        warp: !!old.warp,
+        turn: old.turn || 0,
+      };
+    });
+  }
+
+  /* fill: which picture / movie paints the selected shapes, and how */
+  function fillRow(sel) {
+    const first = sel[0].media || {};
+    const wrap = el('div');
+    const row = el('div', 'row wrap');
+
+    const pick = el('select');
+    pick.title = 'picture or movie painted inside the shape';
+    pick.appendChild(new Option('— no fill —', ''));
+    UV.media.items.forEach((m) => pick.appendChild(new Option((m.kind === 'video' ? '▶ ' : '▣ ') + m.name, m.id)));
+    const cur = UV.media.of(sel[0]);
+    if (first.id && !cur) pick.appendChild(new Option('missing: ' + first.name, first.id));
+    pick.value = cur ? cur.id : first.id || '';
+    pick.onchange = () => { P().snapshot(); fillWith(sel, UV.media.byId(pick.value)); P().touch(); };
+
+    const fit = el('select');
+    fit.title = 'cover / contain / stretch fit the shape; span lays it over the whole projection, seen through the shape';
+    ['cover', 'contain', 'stretch', 'span'].forEach((f) => fit.appendChild(new Option(f, f)));
+    fit.value = first.fit || 'cover';
+    fit.disabled = !first.id || !!first.warp;
+    fit.onchange = () => {
+      P().snapshot();
+      sel.forEach((s) => { if (s.media) s.media.fit = fit.value; });
+      P().touch();
+    };
+
+    row.appendChild(el('span', 'muted', 'fill'));
+    row.appendChild(pick);
+    row.appendChild(fit);
+    wrap.appendChild(row);
+
+    if (first.id) {
+      const wrow = el('div', 'row wrap');
+      const lab = el('label', 'chk');
+      const warp = el('input');
+      warp.type = 'checkbox';
+      warp.checked = !!first.warp;
+      warp.onchange = () => {
+        P().snapshot();
+        sel.forEach((s) => { if (s.media) s.media.warp = warp.checked; });
+        P().touch();
+      };
+      lab.title = 'pin the picture\'s four corners to the shape\'s corners, so it follows the perspective of the surface';
+      lab.appendChild(warp);
+      lab.appendChild(el('span', '', 'perspective'));
+      wrow.appendChild(lab);
+      if (first.warp) {
+        const turn = el('button', 'mini', '↻ turn');
+        turn.title = 'rotate which shape corner the picture\'s top-left goes to';
+        turn.onclick = () => {
+          P().snapshot();
+          sel.forEach((s) => { if (s.media) s.media.turn = ((s.media.turn || 0) + 1) % 4; });
+          P().touch();
+        };
+        wrow.appendChild(turn);
+        if (sel.some((s) => s.pts.length !== 4)) {
+          wrow.appendChild(el('span', 'muted', 'best on 4-point shapes'));
+        }
+      }
+      wrap.appendChild(wrow);
+
+      const orow = el('div', 'row');
+      const olab = el('label', 'nf grow');
+      olab.appendChild(el('span', '', 'opacity'));
+      const op = el('input');
+      op.type = 'range'; op.min = 0; op.max = 1; op.step = 0.01;
+      op.value = first.opacity === undefined ? 1 : first.opacity;
+      op.onpointerdown = () => P().snapshot();
+      op.oninput = () => { sel.forEach((s) => { if (s.media) s.media.opacity = +op.value; }); P().touch(); };
+      olab.appendChild(op);
+      orow.appendChild(olab);
+      wrap.appendChild(orow);
+    }
+    return wrap;
+  }
+
+  /* ---- media library ---- */
+  let mediaSig = '';
+  function buildMediaList() {
+    const box = $('mediaList');
+    box.innerHTML = '';
+    if (!UV.media.items.length) {
+      box.appendChild(el('div', 'empty', 'No pictures or movies yet.'));
+      return;
+    }
+    UV.media.items.forEach((m) => {
+      const row = el('div', 'srow mrow');
+      const kind = el('span', 'kind', m.kind === 'video' ? '▶ mov' : '▣ pic');
+      const name = el('span', 'mname' + (m.ready ? '' : ' wait'), m.name);
+      name.title = m.name + (m.ready ? '' : ' (loading…)');
+
+      const use = el('button', 'icon', '⇥');
+      use.title = 'fill the selected shapes with this';
+      use.onclick = () => {
+        const sel = P().selected();
+        if (!sel.length) return;
+        P().snapshot();
+        fillWith(sel, m);
+        P().touch();
+      };
+      row.appendChild(kind);
+      row.appendChild(name);
+      row.appendChild(use);
+
+      if (m.kind === 'video') {
+        const snd = el('button', 'icon', m.el.muted ? '✕♪' : '♪');
+        snd.title = m.el.muted ? 'sound off (click for sound)' : 'sound on';
+        snd.onclick = () => { m.el.muted = !m.el.muted; mediaSig = ''; UI.refresh(); };
+        row.appendChild(snd);
+      }
+
+      const del = el('button', 'icon danger', '✕');
+      del.title = 'remove from this browser (shapes using it keep the name)';
+      del.onclick = () => UV.media.remove(m.id);
+      row.appendChild(del);
+      box.appendChild(row);
+    });
+  }
+
+  /* save a setup as a .json file */
+  function download(data, name) {
+    return UV.setups.toFile(data, $('exportMedia').checked).then((blob) => {
+      const a = el('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name.replace(/[\\/:*?"<>|]+/g, '_') + '.uvsetup.json';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    });
+  }
+
+  /* ---- setups ---- */
+  function bindSetups() {
+    const save = () => {
+      const name = $('setupName').value.trim() || P().name;
+      const msg = UV.setups.save(name);
+      $('setupNote').textContent = msg || 'Saved \u201c' + name + '\u201d.';
+      if (!msg) $('setupName').value = '';
+    };
+    $('btnSetupSave').onclick = save;
+    $('setupName').onkeydown = (e) => { if (e.key === 'Enter') save(); };
+  }
+
+  function buildSetupList() {
+    const box = $('setupList');
+    box.innerHTML = '';
+    const list = UV.setups.list();
+    if (!list.length) { box.appendChild(el('div', 'empty', 'No saved setups yet.')); return; }
+    list.slice().sort((a, b) => b.saved - a.saved).forEach((x) => {
+      const row = el('div', 'srow mrow');
+      const name = el('span', 'mname', x.name);
+      const d = new Date(x.saved);
+      name.title = 'saved ' + d.toLocaleString() + ' · ' + x.data.project.shapes.length + ' shapes';
+      const when = el('span', 'meta', d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }));
+
+      const load = el('button', 'mini', 'load');
+      load.title = 'replace the page with this setup (Ctrl+Z undoes the shapes)';
+      load.onclick = () => { UV.setups.load(x.name); $('setupNote').textContent = 'Loaded \u201c' + x.name + '\u201d.'; };
+
+      const exp = el('button', 'icon', '⇩');
+      exp.title = 'export this setup as a file';
+      exp.onclick = () => download(x.data, x.name);
+
+      /* two clicks to delete, no dialog */
+      const del = el('button', 'icon danger', '✕');
+      del.title = 'delete this setup';
+      del.onclick = () => {
+        if (del.dataset.armed) { UV.setups.remove(x.name); return; }
+        del.dataset.armed = '1';
+        del.textContent = 'sure?';
+        del.style.width = 'auto';
+        setTimeout(() => { delete del.dataset.armed; del.textContent = '✕'; del.style.width = ''; }, 2500);
+      };
+      [name, when, load, exp, del].forEach((e) => row.appendChild(e));
+      box.appendChild(row);
+    });
+  }
+
+  /* ---- layers ---- */
+  const openLayers = new Set(); /* which layer cards are expanded (UI only) */
+  let layerSig = '';
+  function layerSignature() {
+    const ly = P().layers || [];
+    return ly.map((l) => [l.id, l.effect, l.on, Array.isArray(l.target) ? l.target.join('+') : l.target, l.blend, openLayers.has(l.id)].join(',')).join('|') +
+      '#' + Object.keys(UV.effects).join(',') + '#' + P().shapes.map((s) => s.id + s.name).join(',');
+  }
+
+  function bindLayers() {
+    $('btnAddLayer').onclick = () => {
+      const id = $('addFx').value;
+      if (!UV.effects[id]) return;
+      const ly = UV.layers.make(id);
+      P().layers.push(ly);
+      openLayers.add(ly.id);
+      P().touch();
+    };
+    $('presetPick').onchange = (e) => {
+      const pr = (UV.presets || [])[+e.target.value];
+      e.target.value = '';
+      if (pr) UV.layers.applyPreset(pr);
+    };
+  }
+
+  function buildLayers() {
+    const fxs = Object.values(UV.effects);
+    const add = $('addFx');
+    const keep = add.value;
+    add.innerHTML = '';
+    fxs.forEach((fx) => add.appendChild(new Option(fx.label + (fx.by ? ' · ' + fx.by : ''), fx.id)));
+    add.value = UV.effects[keep] ? keep : 'outline' in UV.effects ? 'outline' : (fxs[0] || {}).id;
+
+    const pre = $('presetPick');
+    pre.innerHTML = '';
+    pre.appendChild(new Option('presets…', ''));
+    (UV.presets || []).forEach((pr, i) => pre.appendChild(new Option(pr.name, i)));
+    pre.value = '';
+
+    const box = $('layerList');
+    box.innerHTML = '';
+    const list = P().layers || [];
+    if (!list.length) { box.appendChild(el('div', 'empty', 'No layers: add one below, or pick a preset.')); return; }
+    /* shown top layer first */
+    list.slice().reverse().forEach((ly) => box.appendChild(layerCard(ly, list)));
+  }
+
+  function layerCard(ly, list) {
+    const fx = UV.effects[ly.effect];
+    const card = el('div', 'layer' + (ly.on ? '' : ' off'));
+    const head = el('div', 'lhead');
+
+    const on = el('input');
+    on.type = 'checkbox';
+    on.checked = ly.on;
+    on.title = 'on / off';
+    on.onchange = () => { ly.on = on.checked; P().touch(); };
+
+    const open = openLayers.has(ly.id);
+    const name = el('span', 'lname' + (fx ? '' : ' missing'), (open ? '▾ ' : '▸ ') + (fx ? fx.label : 'missing effect: ' + ly.effect));
+    name.title = fx ? (fx.by ? 'by ' + fx.by + ' · ' : '') + 'click for settings' : 'this effect is not loaded in this file';
+    name.onclick = () => { if (open) openLayers.delete(ly.id); else openLayers.add(ly.id); UI.refresh(); };
+
+    const i = list.indexOf(ly);
+    const move = (to) => { list.splice(i, 1); list.splice(to, 0, ly); P().touch(); };
+    const up = el('button', 'icon', '↑');
+    up.title = 'move up (draw later, on top)';
+    up.onclick = () => { if (i < list.length - 1) move(i + 1); };
+    const down = el('button', 'icon', '↓');
+    down.title = 'move down';
+    down.onclick = () => { if (i > 0) move(i - 1); };
+    const dup = el('button', 'icon', '⧉');
+    dup.title = 'duplicate';
+    dup.onclick = () => {
+      const c = JSON.parse(JSON.stringify(ly));
+      c.id = UV.util.uid('ly');
+      list.splice(i + 1, 0, c);
+      P().touch();
+    };
+    const del = el('button', 'icon danger', '✕');
+    del.title = 'remove layer';
+    del.onclick = () => { list.splice(i, 1); P().touch(); };
+    [on, name, up, down, dup, del].forEach((e) => head.appendChild(e));
+    card.appendChild(head);
+    if (!open) return card;
+
+    const body = el('div', 'lbody');
+
+    /* target: all shapes, the current selection, or one shape */
+    const r1 = el('div', 'row wrap');
+    const tgt = el('select');
+    tgt.title = 'which shapes this layer draws on';
+    tgt.appendChild(new Option('all shapes', 'all'));
+    const selN = P().sel.size;
+    tgt.appendChild(new Option('the selected shapes (' + selN + ')', '__sel'));
+    P().shapes.forEach((s) => tgt.appendChild(new Option(s.name, s.id)));
+    if (Array.isArray(ly.target) && ly.target.length !== 1) tgt.appendChild(new Option(ly.target.length + ' shapes', '__cur'));
+    tgt.value = !Array.isArray(ly.target) ? 'all' : ly.target.length === 1 ? ly.target[0] : '__cur';
+    tgt.onchange = () => {
+      const v = tgt.value;
+      if (v === 'all') ly.target = 'all';
+      else if (v === '__sel') { if (selN) ly.target = [...P().sel]; }
+      else if (v !== '__cur') ly.target = [v];
+      P().touch();
+      layerSig = '';
+      UI.refresh();
+    };
+    const blend = el('select');
+    blend.title = 'how this layer mixes with the layers under it';
+    UV.layers.BLENDS.forEach((b) => blend.appendChild(new Option(UV.layers.BLEND_NAMES[b] || b, b)));
+    blend.value = ly.blend || 'source-over';
+    blend.onchange = () => { ly.blend = blend.value; P().touch(); };
+    r1.appendChild(tgt);
+    r1.appendChild(blend);
+    body.appendChild(r1);
+
+    body.appendChild(slider('opacity', { min: 0, max: 1, step: 0.01 }, ly.opacity, (v) => { ly.opacity = v; }));
+
+    if (fx) {
+      const vals = UV.layers.params(ly);
+      Object.keys(fx.params || {}).forEach((k) => {
+        const spec = fx.params[k];
+        const set = (v) => { ly.params = ly.params || {}; ly.params[k] = v; P().touch(); };
+        body.appendChild(paramControl(spec.label || k, spec, vals[k], set));
+      });
+      const rr = el('div', 'row');
+      const reset = el('button', 'mini', 'reset settings');
+      reset.onclick = () => { ly.params = {}; layerSig = ''; P().touch(); };
+      rr.appendChild(reset);
+      body.appendChild(rr);
+    }
+    card.appendChild(body);
+    return card;
+  }
+
+  function slider(label, spec, value, onInput) {
+    const row = el('div', 'row');
+    const lab = el('label', 'nf grow');
+    lab.appendChild(el('span', '', label));
+    const r = el('input');
+    r.type = 'range';
+    r.min = spec.min === undefined ? 0 : spec.min;
+    r.max = spec.max === undefined ? 1 : spec.max;
+    r.step = spec.step || (Math.abs(r.max - r.min) > 20 ? 1 : (r.max - r.min) / 100);
+    r.value = value;
+    const out = el('span', 'pval', fmt(value));
+    r.oninput = () => { onInput(+r.value); out.textContent = fmt(+r.value); P().touch(); };
+    lab.appendChild(r);
+    row.appendChild(lab);
+    row.appendChild(out);
+    return row;
+  }
+  const fmt = (v) => (Math.abs(v) >= 100 || Number.isInteger(v) ? String(Math.round(v)) : (+v).toFixed(2));
+
+  /* a param spec -> a control: number slider, colour, checkbox or dropdown */
+  function paramControl(label, spec, value, set) {
+    if (Array.isArray(spec.options)) {
+      const row = el('div', 'row');
+      const lab = el('label', 'nf');
+      lab.appendChild(el('span', '', label));
+      const sel = el('select');
+      spec.options.forEach((o) => sel.appendChild(new Option(String(o), String(o))));
+      sel.value = String(value);
+      sel.onchange = () => set(typeof spec.value === 'number' ? +sel.value : sel.value);
+      lab.appendChild(sel);
+      row.appendChild(lab);
+      return row;
+    }
+    if (typeof spec.value === 'boolean') {
+      const row = el('div', 'row');
+      const lab = el('label', 'chk');
+      const cb = el('input');
+      cb.type = 'checkbox';
+      cb.checked = !!value;
+      cb.onchange = () => set(cb.checked);
+      lab.appendChild(cb);
+      lab.appendChild(el('span', '', label));
+      row.appendChild(lab);
+      return row;
+    }
+    if (typeof spec.value === 'string' && /^#[0-9a-f]{3,6}$/i.test(spec.value)) {
+      const row = el('div', 'row');
+      const lab = el('label', 'nf');
+      lab.appendChild(el('span', '', label));
+      const c = el('input');
+      c.type = 'color';
+      c.value = value;
+      c.oninput = () => set(c.value);
+      lab.appendChild(c);
+      row.appendChild(lab);
+      return row;
+    }
+    if (typeof spec.value === 'string') {
+      const row = el('div', 'row');
+      const lab = el('label', 'nf grow');
+      lab.appendChild(el('span', '', label));
+      const tx = el('input');
+      tx.type = 'text';
+      tx.value = value;
+      tx.onchange = () => set(tx.value);
+      lab.appendChild(tx);
+      row.appendChild(lab);
+      return row;
+    }
+    return slider(label, spec, value, (v) => { set(v); });
+  }
+
+  /* ---- two screens ---- */
+  function bindScreens() {
+    const O = UV.screens;
+    $('spanChk').onchange = (e) => {
+      O.span = e.target.checked;
+      O.apply();
+      if (O.span && !O.details) O.detect(true); /* a click: allowed to ask for screen access */
+    };
+    $('previewOutChk').onchange = (e) => { O.preview = e.target.checked; O.apply(); };
+    $('outPick').onchange = (e) => { O.pick = e.target.value; O.apply(); };
+    $('btnDetect').onclick = () => O.detect(true);
+    /* PLAY hides the cursor, but only over the projector, not the control screen */
+    UV.stage.canvas.addEventListener('pointermove', (e) => {
+      const c = UV.stage.ctl;
+      const onCtl = c && e.clientX >= c.x && e.clientX < c.x + c.w && e.clientY >= c.y && e.clientY < c.y + c.h;
+      const p = UV.stage.pv;
+      const onPv = p && e.clientX >= p.x && e.clientX <= p.x + p.w && e.clientY >= p.y && e.clientY <= p.y + p.h;
+      UV.stage.canvas.style.cursor = onPv ? 'crosshair' : onCtl ? 'default' : '';
+    });
+    $('btnSpanWin').onclick = () => {
+      const w = O.openSpan();
+      if (w) UV.app.handOff(w);
+      else spanNote = 'The browser blocked the new window: allow pop-ups for this page, or stretch this window by hand.';
+      UI.refresh();
+    };
+  }
+
+  let spanNote = '';
+  function refreshScreens() {
+    const O = UV.screens, S = UV.stage;
+    $('spanChk').checked = O.span;
+    $('previewOutChk').checked = O.preview;
+    $('spanBox').hidden = !O.span;
+    if (!O.span) return;
+
+    const pick = $('outPick');
+    const list = O.screens();
+    const opts = [['auto', 'auto (not the main screen)']].concat(list.map((s, i) => [O.key(s), O.name(s, i) + ' · ' + s.width + '×' + s.height]));
+    const sig = opts.map((o) => o.join('=')).join('|');
+    if (pick.dataset.sig !== sig) {
+      pick.innerHTML = '';
+      opts.forEach(([v, t]) => pick.appendChild(new Option(t, v)));
+      pick.dataset.sig = sig;
+    }
+    pick.value = opts.some((o) => o[0] === O.pick) ? O.pick : 'auto';
+    pick.disabled = !list.length;
+    $('btnDetect').hidden = !!O.details || !O.supported;
+    $('btnSpanWin').disabled = !S.out;
+
+    const box = $('spanStatus');
+    let msg = '', cls = 'status';
+    const size = S.out ? S.out.width + '×' + S.out.height : '';
+    if (O.state === 'unsupported') { msg = 'This browser can’t list screens. Use Chrome or Edge.'; cls += ' warn'; }
+    else if (O.state === 'ask') { msg = 'Click detect screens and allow screen access, so the page can find the projector.'; cls += ' warn'; }
+    else if (O.state === 'refused') { msg = 'Screen access was refused. Allow “window management” in the site settings (padlock icon), then detect again.'; cls += ' warn'; }
+    else if (O.state === 'single') { msg = 'Only one screen found. Connect the projector and set Windows to Extend (Win+P).'; cls += ' warn'; }
+    else if (S.out) {
+      const cov = Math.round(UV.screens.coverage() * 100);
+      msg = 'Output: ' + S.outLabel + ' · ' + size + (O.state === 'guess' ? ' (last seen; detect to refresh)' : '') + '. ';
+      if (document.fullscreenElement) { msg += 'Fullscreen on it.'; cls += ' ok'; }
+      else if (cov >= 99) { msg += 'This window covers all of it.'; cls += ' ok'; }
+      else { msg += 'This window covers ' + cov + '% of it: stretch the window over that screen.'; cls += ' warn'; }
+    }
+    if (spanNote) msg += ' ' + spanNote;
+    box.className = cls;
+    box.textContent = msg;
+  }
+
+  /* span mode: keep the panel, the hint and the error box on the control
+     screen's share of the window, never on the projector */
+  let placeSig = '';
+  function placeForSpan() {
+    const c = UV.stage.ctl, S = UV.stage;
+    const sig = c ? [c.x, c.y, c.w, c.h, S.vw, S.vh].map(Math.round).join(',') : '';
+    if (sig !== placeSig) {
+      placeSig = sig;
+      document.body.classList.toggle('span', !!c);
+      const pn = $('panel').style, hint = $('hint').style, err = $('err').style;
+      if (c) {
+        pn.left = c.x + 'px'; pn.top = c.y + 'px'; pn.height = c.h + 'px'; pn.bottom = 'auto';
+        const free = Math.max(160, c.w - S.panelW); /* the hint goes beside the panel */
+        hint.left = c.x + c.w - free / 2 + 'px'; hint.bottom = S.vh - (c.y + c.h) + 10 + 'px'; hint.maxWidth = free - 24 + 'px';
+        err.right = S.vw - (c.x + c.w) + 10 + 'px'; err.top = c.y + 10 + 'px'; err.maxWidth = c.w * 0.6 + 'px';
+      } else {
+        ['left', 'top', 'height', 'bottom'].forEach((k) => { pn[k] = ''; });
+        ['left', 'bottom', 'maxWidth'].forEach((k) => { hint[k] = ''; });
+        ['right', 'top', 'maxWidth'].forEach((k) => { err[k] = ''; });
+      }
+    }
+    if (UV.screens.span) refreshScreens();
+  }
+
+  /* drop files anywhere: onto a shape fills it, elsewhere just loads them */
+  function bindDrop() {
+    let depth = 0;
+    const isFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+    window.addEventListener('dragenter', (e) => { if (isFiles(e)) { depth++; document.body.classList.add('dropping'); } });
+    window.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; document.body.classList.remove('dropping'); } });
+    window.addEventListener('dragover', (e) => { if (isFiles(e)) e.preventDefault(); });
+    window.addEventListener('drop', (e) => {
+      if (!isFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      document.body.classList.remove('dropping');
+      const added = [...e.dataTransfer.files].map((f) => UV.media.add(f)).filter(Boolean);
+      const target = e.target === UV.stage.canvas ? UV.editor.shapeAt(e) : null;
+      if (target && added.length) {
+        P().snapshot();
+        fillWith([target], added[0]);
+        P().sel = new Set([target.id]);
+        P().touch();
+      }
+    });
   }
 
   /* ---- refresh ---- */
@@ -1402,11 +3107,18 @@ window.UV = window.UV || {};
 
     const sig = shapeSignature();
     if (sig !== shapeSig) { shapeSig = sig; buildShapeList(); buildShapeProps(); }
+    const lsig = layerSignature();
+    if (lsig !== layerSig) { layerSig = lsig; buildLayers(); }
+    const msig = UV.media.items.map((m) => [m.id, m.ready, m.el.muted].join(',')).join('|');
+    if (msig !== mediaSig) { mediaSig = msig; buildMediaList(); }
+    $('mediaChk').checked = UV.editor.showMedia;
 
     const asp = $('aspectInput');
     if (document.activeElement !== asp) asp.value = P().aspect.toFixed(4);
-    $('aspectNote').textContent = 'screen is ' + (window.screen.width + '×' + window.screen.height) +
+    const tgt = UV.stage.target();
+    $('aspectNote').textContent = (UV.stage.out ? 'output screen is ' : 'screen is ') + tgt.width + '×' + tgt.height +
       ' (' + UV.stage.screenAspect().toFixed(4) + ')';
+    refreshScreens();
     if (document.activeElement !== $('projName')) $('projName').value = P().name;
     $('refOpacity').value = P().ref.opacity;
     $('refVisible').checked = P().ref.visible;
@@ -1432,9 +3144,25 @@ window.UV = window.UV || {};
     if (m === 'show') UV.editor.pending = null;
     UV.ui.refresh();
   };
+  app.restart = function () {
+    app.time = 0;
+    app.playing = true;
+    UV.media.restart();
+    UV.layers.reset();
+    UV.ui.refresh();
+  };
   app.togglePanel = function () {
     app.panel = !app.panel;
     document.body.classList.toggle('nopanel', !app.panel);
+    UV.stage.panelOpen = app.panel; /* the preview grows into the panel's space */
+    UV.stage.layout();
+  };
+
+  /* a spanning window took over: stay idle (no second render loop, no saves
+     racing it) and pick up its work once it is closed */
+  app.handOff = function (w) {
+    app.away = w;
+    const t = setInterval(() => { if (w.closed) { clearInterval(t); location.reload(); } }, 500);
   };
 
   function starterShape() {
@@ -1448,31 +3176,17 @@ window.UV = window.UV || {};
     UV.project.shapes.push(UV.project.newShape(pts, true, 'starter hex'));
   }
 
-  /* run the student's draw() so that one bad line shows an error instead of
-     freezing the page */
-  const errBox = () => document.getElementById('err');
-  let lastErr = '';
-  function runDraw(ctx) {
+  /* every frame: the layer stack over the visible shapes */
+  function runLayers(ctx, skip) {
     const shapes = UV.project.shapes.filter((s) => s.visible && s.pts.length > 1);
-    ctx.save();
-    try {
-      if (typeof window.draw === 'function') window.draw(ctx, app.time, shapes);
-      if (lastErr) { lastErr = ''; errBox().hidden = true; }
-    } catch (e) {
-      const msg = 'draw() error: ' + (e && e.message ? e.message : e);
-      if (msg !== lastErr) {
-        lastErr = msg;
-        errBox().textContent = msg + '\n(open the browser console, F12, for the line number)';
-        errBox().hidden = false;
-        console.error(e);
-      }
-    }
-    ctx.restore();
+    UV.layers.render(ctx, shapes, app.time, skip);
   }
 
   function boot() {
     const canvas = document.getElementById('stage');
     UV.stage.init(canvas);
+    UV.screens.apply();         /* span mode from the last visit, if it was on */
+    UV.screens.detect(false);   /* refresh the screens, if access was allowed before */
     UV.stage.setAspect(UV.stage.screenAspect());
 
     if (!UV.project.loadLocal()) {
@@ -1480,7 +3194,9 @@ window.UV = window.UV || {};
       UV.stage.setAspect(UV.project.aspect);
       starterShape();
     }
+    if (!UV.project.layers) UV.project.layers = UV.layers.defaults();
 
+    UV.media.load();
     UV.editor.attach(canvas);
     UV.ui.init();
     window.addEventListener('keydown', onKey);
@@ -1493,12 +3209,23 @@ window.UV = window.UV || {};
       UV.stage.track();
       const ctx = UV.stage.ctx;
       UV.stage.begin();
+      if (app.away) {
+        ctx.fillStyle = '#7b869c';
+        ctx.font = '14px ui-monospace, Consolas, monospace';
+        ctx.fillText('Running in the spanning window. Close it to carry on here.', 340, 40);
+        UV.media.sync(false, 0);
+        requestAnimationFrame(frame);
+        return;
+      }
       if (app.mode === 'map') {
         UV.editor.render(ctx);
-        if (document.getElementById('previewChk').checked) runDraw(ctx);
+        /* MAP already shows the fills (media checkbox), so don't draw them twice */
+        if (document.getElementById('previewChk').checked) runLayers(ctx, UV.editor.showMedia ? 'media' : null);
       } else {
-        runDraw(ctx);
+        runLayers(ctx, null);
       }
+      UV.stage.finish(); /* span mode: control screen + preview */
+      UV.media.sync(app.playing, app.speed);
       UV.ui.refreshTime();
       requestAnimationFrame(frame);
     }
@@ -1507,7 +3234,11 @@ window.UV = window.UV || {};
 
   function onKey(e) {
     const tag = (e.target && e.target.tagName) || '';
-    const typing = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA';
+    /* keys go to the field while typing or using a slider / dropdown; after
+       clicking a checkbox or button, the shortcuts keep working */
+    const type = (e.target && e.target.type) || '';
+    const typing = tag === 'SELECT' || tag === 'TEXTAREA' ||
+      (tag === 'INPUT' && !['checkbox', 'radio', 'button', 'color', 'file'].includes(type));
 
     if (e.key === 'Tab') { e.preventDefault(); app.togglePanel(); return; }
     if (typing) return;
@@ -1523,7 +3254,7 @@ window.UV = window.UV || {};
     if (e.key === 'f' || e.key === 'F') { UV.stage.requestFullscreen(); return; }
     if (e.key === 'm' || e.key === 'M') { app.setMode(app.mode === 'map' ? 'show' : 'map'); return; }
     if (e.key === ' ') { e.preventDefault(); app.playing = !app.playing; UV.ui.refresh(); return; }
-    if (app.mode === 'show' && (e.key === 'r' || e.key === 'R')) { app.time = 0; app.playing = true; UV.ui.refresh(); return; }
+    if (app.mode === 'show' && (e.key === 'r' || e.key === 'R')) { app.restart(); return; }
 
     if (UV.editor.key(e)) { e.preventDefault(); UV.ui.refresh(); }
   }
